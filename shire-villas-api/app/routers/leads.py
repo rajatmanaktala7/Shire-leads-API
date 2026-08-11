@@ -1,16 +1,46 @@
+import csv
+import hashlib
+import io
 import json
+import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.lead import Lead, LeadStatus
 from app.schemas.lead import (
     LeadCreate, LeadUpdate, LeadOut, QualifyRequest, QualifyResponse,
+    TrackVisitRequest, QualifyExistingRequest,
 )
 from app.services.lead_service import score_from_answers, recommended_action, log_activity
 
 router = APIRouter(prefix="/leads", tags=["leads"])
+
+
+@router.post("/track", response_model=LeadOut)
+def track_visit(payload: TrackVisitRequest, db: Session = Depends(get_db)):
+    """
+    Called automatically the moment someone opens the landing page.
+    Creates a bare lead record with no manual entry, so every visitor
+    exists in the CRM even if they never finish the chatbot. The
+    chatbot later fills this same record in via /leads/{id}/qualify
+    instead of creating a duplicate.
+    """
+    lead = Lead(
+        name="Website visitor",
+        source=payload.source or "landing_page",
+        status=LeadStatus.NEW,
+    )
+    db.add(lead)
+    db.commit()
+    db.refresh(lead)
+    log_activity(
+        db, lead.id, "PAGE_VISIT",
+        f"Landed on {payload.page or payload.source or 'landing page'}",
+    )
+    return lead
 
 
 @router.post("/", response_model=LeadOut)
@@ -51,6 +81,55 @@ def get_lead(lead_id: str, db: Session = Depends(get_db)):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
+
+
+@router.get("/export/meta-audience")
+def export_meta_audience(
+    db: Session = Depends(get_db),
+    temperature: str | None = Query(default=None),
+    min_score: float | None = Query(default=None),
+):
+    """
+    Exports your own leads as a hashed CSV ready to upload to Meta
+    Ads Manager as a Custom Audience. This is the legitimate version
+    of ad targeting: you upload people who already gave you their
+    contact info, Meta finds people who resemble them (a Lookalike
+    Audience), and ads are shown to that new audience. Emails and
+    phones are SHA-256 hashed exactly as Meta requires, so raw contact
+    data never leaves this file unprotected.
+    """
+    q = db.query(Lead).filter(
+        (Lead.email.isnot(None)) | (Lead.phone.isnot(None))
+    )
+    if temperature:
+        q = q.filter(Lead.temperature == temperature.upper())
+    if min_score is not None:
+        q = q.filter(Lead.overall_score >= min_score)
+    leads = q.all()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["email", "phone"])
+
+    for lead in leads:
+        email_hash = ""
+        if lead.email:
+            email_hash = hashlib.sha256(lead.email.strip().lower().encode()).hexdigest()
+
+        phone_hash = ""
+        if lead.phone:
+            digits = re.sub(r"\D", "", lead.phone)
+            if digits:
+                phone_hash = hashlib.sha256(digits.encode()).hexdigest()
+
+        if email_hash or phone_hash:
+            writer.writerow([email_hash, phone_hash])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=meta_custom_audience.csv"},
+    )
 
 
 @router.put("/{lead_id}", response_model=LeadOut)
@@ -101,6 +180,59 @@ def qualify_lead(payload: QualifyRequest, db: Session = Depends(get_db)):
         raw_answers=json.dumps(answers_map),
     )
     db.add(lead)
+    db.commit()
+    db.refresh(lead)
+
+    log_activity(
+        db, lead.id, "QUALIFICATION_COMPLETE",
+        f"Scored {result['overall_score']} — {result['temperature'].value}",
+    )
+
+    return QualifyResponse(
+        lead=lead,
+        breakdown={
+            "budget": result["budget_score"],
+            "authority": result["authority_score"],
+            "need": result["need_score"],
+            "timeline": result["timeline_score"],
+            "fit": result["fit_score"],
+        },
+        recommended_action=recommended_action(result["temperature"]),
+    )
+
+
+@router.post("/{lead_id}/qualify", response_model=QualifyResponse)
+def qualify_existing_lead(
+    lead_id: str, payload: QualifyExistingRequest, db: Session = Depends(get_db)
+):
+    """
+    Scores a lead that already exists in the CRM (created by /leads/track
+    when they landed on the page). This is what the chatbot calls when
+    it was opened from the landing page, so the visitor's page-visit
+    record gets enriched instead of a second duplicate lead being created.
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    answers_map = {a.question_id: a.answer for a in payload.answers}
+    result = score_from_answers(answers_map)
+
+    if payload.contact:
+        for key, value in payload.contact.model_dump(exclude_unset=True).items():
+            if value is not None:
+                setattr(lead, key, value)
+
+    lead.budget_score = result["budget_score"]
+    lead.authority_score = result["authority_score"]
+    lead.need_score = result["need_score"]
+    lead.timeline_score = result["timeline_score"]
+    lead.fit_score = result["fit_score"]
+    lead.overall_score = result["overall_score"]
+    lead.temperature = result["temperature"]
+    lead.status = LeadStatus.QUALIFIED
+    lead.raw_answers = json.dumps(answers_map)
+
     db.commit()
     db.refresh(lead)
 
