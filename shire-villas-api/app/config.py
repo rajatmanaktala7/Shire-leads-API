@@ -25,6 +25,12 @@ class Settings:
     GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
     GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
+    # Meta Pixel ID for Instagram/Facebook ad tracking and retargeting.
+    # Get this free from business.facebook.com/events_manager.
+    # Leave blank and the landing page simply skips pixel tracking,
+    # nothing breaks.
+    META_PIXEL_ID: str = os.getenv("META_PIXEL_ID", "")
+
     SECRET_KEY: str = os.getenv("SECRET_KEY", "dev-secret-change-me")
 
     # Comma-separated list, e.g. "https://yourname.github.io,https://shire.com"
