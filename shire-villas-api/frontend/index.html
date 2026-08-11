@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shire Villas — Lead Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root {
+    --forest: #1b3a2b;
+    --canopy: #0f251a;
+    --gold: #c9a24b;
+    --cream: #f6f1e7;
+    --hot: #d9534f;
+    --warm: #e0a03c;
+    --cold: #4a7fb5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--cream);
+    color: var(--canopy);
+  }
+  header {
+    background: var(--forest);
+    color: var(--cream);
+    padding: 20px 28px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  header h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: 0.3px; }
+  header .sub { font-size: 12px; opacity: 0.75; margin-top: 2px; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: white;
+    border-radius: 10px;
+    padding: 16px 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    border-left: 4px solid var(--gold);
+  }
+  .stat-card .value { font-size: 28px; font-weight: 700; color: var(--forest); }
+  .stat-card .label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.4px; margin-top: 4px; }
+  .charts-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  @media (max-width: 720px) { .charts-grid { grid-template-columns: 1fr; } }
+  .card {
+    background: white;
+    border-radius: 10px;
+    padding: 18px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+  }
+  .card h3 { margin: 0 0 12px 0; font-size: 14px; color: var(--forest); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; }
+  th { color: #666; font-weight: 600; text-transform: uppercase; font-size: 11px; }
+  tr:hover { background: #faf8f2; cursor: pointer; }
+  .badge { padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; color: white; }
+  .badge.HOT { background: var(--hot); }
+  .badge.WARM { background: var(--warm); }
+  .badge.COLD { background: var(--cold); }
+  .badge.UNQUALIFIED { background: #999; }
+  #search {
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 13px;
+    width: 220px;
+  }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 8px; }
+  .activity-item { padding: 8px 0; border-bottom: 1px solid #f0f0f0; font-size: 13px; }
+  .activity-item .time { color: #999; font-size: 11px; }
+  .modal-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    align-items: center; justify-content: center; z-index: 50; padding: 16px;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal { background: white; border-radius: 12px; padding: 24px; max-width: 480px; width: 100%; max-height: 85vh; overflow-y: auto; }
+  .modal h2 { margin-top: 0; color: var(--forest); }
+  .modal .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #f2f2f2; font-size: 13px; }
+  .close-btn { float: right; cursor: pointer; font-size: 20px; color: #999; }
+  .empty-state { text-align: center; padding: 40px; color: #999; }
+  button.refresh {
+    background: var(--forest); color: white; border: none; padding: 8px 14px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Shire Villas — Lead Dashboard</h1>
+    <div class="sub">Siolim, North Goa · 18 Ultra-Luxury 4BHK Villas</div>
+  </div>
+  <button class="refresh" onclick="loadAll()">Refresh</button>
+</header>
+
+<div class="container">
+  <div class="stats-grid" id="statsGrid"></div>
+
+  <div class="charts-grid">
+    <div class="card">
+      <h3>Lead Temperature</h3>
+      <canvas id="tempChart" height="180"></canvas>
+    </div>
+    <div class="card">
+      <h3>Average BANT Scores</h3>
+      <canvas id="bantChart" height="180"></canvas>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <h3>Pipeline Funnel</h3>
+    <canvas id="funnelChart" height="90"></canvas>
+  </div>
+
+  <div class="card" style="margin-bottom:16px;">
+    <div class="toolbar">
+      <h3 style="margin:0;">Leads</h3>
+      <input id="search" placeholder="Search name, email, company..." oninput="renderLeads()">
+    </div>
+    <table>
+      <thead>
+        <tr><th>Name</th><th>Score</th><th>Temp</th><th>Status</th><th>Source</th><th>Created</th></tr>
+      </thead>
+      <tbody id="leadsBody"></tbody>
+    </table>
+    <div id="leadsEmpty" class="empty-state" style="display:none;">No leads yet. They'll show up here the moment your bot qualifies one.</div>
+  </div>
+
+  <div class="card">
+    <h3>Recent Activity</h3>
+    <div id="activityFeed"></div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this) closeModal()">
+  <div class="modal" id="modalContent"></div>
+</div>
+
+<script>
+// Auto-detect API base: same origin as this page (works whether served
+// from the API itself at /app, or opened standalone with API elsewhere).
+const API_BASE = window.API_BASE_OVERRIDE || window.location.origin;
+
+let allLeads = [];
+let tempChart, bantChart, funnelChart;
+
+async function fetchJSON(path) {
+  const res = await fetch(API_BASE + path);
+  if (!res.ok) throw new Error('Request failed: ' + path);
+  return res.json();
+}
+
+function fmtMoney(n) {
+  if (!n) return '—';
+  return '₹' + (n / 10000000).toFixed(1) + ' Cr';
+}
+
+function renderStats(d) {
+  const cards = [
+    { label: 'Total Leads', value: d.total_leads },
+    { label: 'Hot', value: d.hot },
+    { label: 'Warm', value: d.warm },
+    { label: 'Cold', value: d.cold },
+    { label: 'Converted', value: d.converted },
+    { label: 'Conversion Rate', value: d.conversion_rate + '%' },
+    { label: 'Last 7 Days', value: d.leads_last_7_days },
+  ];
+  document.getElementById('statsGrid').innerHTML = cards.map(c =>
+    `<div class="stat-card"><div class="value">${c.value}</div><div class="label">${c.label}</div></div>`
+  ).join('');
+}
+
+function renderCharts(d) {
+  const tempCtx = document.getElementById('tempChart');
+  if (tempChart) tempChart.destroy();
+  tempChart = new Chart(tempCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Hot', 'Warm', 'Cold'],
+      datasets: [{ data: [d.hot, d.warm, d.cold], backgroundColor: ['#d9534f', '#e0a03c', '#4a7fb5'] }]
+    },
+    options: { plugins: { legend: { position: 'bottom' } } }
+  });
+
+  const bantCtx = document.getElementById('bantChart');
+  if (bantChart) bantChart.destroy();
+  bantChart = new Chart(bantCtx, {
+    type: 'radar',
+    data: {
+      labels: ['Budget', 'Authority', 'Need', 'Timeline', 'Fit'],
+      datasets: [{
+        label: 'Avg Score',
+        data: [d.avg_bant.budget, d.avg_bant.authority, d.avg_bant.need, d.avg_bant.timeline, d.avg_bant.fit],
+        backgroundColor: 'rgba(27,58,43,0.2)',
+        borderColor: '#1b3a2b',
+      }]
+    },
+    options: { scales: { r: { suggestedMin: 0, suggestedMax: 100 } } }
+  });
+
+  const funnelCtx = document.getElementById('funnelChart');
+  if (funnelChart) funnelChart.destroy();
+  funnelChart = new Chart(funnelCtx, {
+    type: 'bar',
+    data: {
+      labels: ['New', 'In Progress', 'Qualified', 'Site Visit', 'Converted'],
+      datasets: [{
+        data: [d.funnel.new, d.funnel.in_progress, d.funnel.qualified, d.funnel.site_visit, d.funnel.converted],
+        backgroundColor: '#c9a24b',
+      }]
+    },
+    options: { indexAxis: 'y', plugins: { legend: { display: false } } }
+  });
+}
+
+function renderActivity(activities) {
+  const feed = document.getElementById('activityFeed');
+  if (!activities.length) {
+    feed.innerHTML = '<div class="empty-state">No activity yet.</div>';
+    return;
+  }
+  feed.innerHTML = activities.map(a => `
+    <div class="activity-item">
+      <strong>${a.action_type.replace(/_/g, ' ')}</strong> — ${a.description || ''}
+      <div class="time">${new Date(a.created_at).toLocaleString()}</div>
+    </div>
+  `).join('');
+}
+
+function renderLeads() {
+  const q = document.getElementById('search').value.toLowerCase();
+  const filtered = allLeads.filter(l =>
+    !q || l.name.toLowerCase().includes(q) ||
+    (l.email || '').toLowerCase().includes(q) ||
+    (l.company || '').toLowerCase().includes(q)
+  );
+  const body = document.getElementById('leadsBody');
+  const empty = document.getElementById('leadsEmpty');
+  if (!filtered.length) {
+    body.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  body.innerHTML = filtered.map(l => `
+    <tr onclick='openModal(${JSON.stringify(l).replace(/'/g, "&apos;")})'>
+      <td>${l.name}</td>
+      <td>${l.overall_score}</td>
+      <td><span class="badge ${l.temperature}">${l.temperature}</span></td>
+      <td>${l.status}</td>
+      <td>${l.source}</td>
+      <td>${new Date(l.created_at).toLocaleDateString()}</td>
+    </tr>
+  `).join('');
+}
+
+function openModal(lead) {
+  document.getElementById('modalContent').innerHTML = `
+    <span class="close-btn" onclick="closeModal()">&times;</span>
+    <h2>${lead.name}</h2>
+    <div class="row"><span>Email</span><span>${lead.email || '—'}</span></div>
+    <div class="row"><span>Phone</span><span>${lead.phone || '—'}</span></div>
+    <div class="row"><span>Company</span><span>${lead.company || '—'}</span></div>
+    <div class="row"><span>Source</span><span>${lead.source}</span></div>
+    <div class="row"><span>Status</span><span>${lead.status}</span></div>
+    <div class="row"><span>Temperature</span><span class="badge ${lead.temperature}">${lead.temperature}</span></div>
+    <div class="row"><span>Overall Score</span><span>${lead.overall_score}</span></div>
+    <div class="row"><span>Budget</span><span>${lead.budget_score}</span></div>
+    <div class="row"><span>Authority</span><span>${lead.authority_score}</span></div>
+    <div class="row"><span>Need</span><span>${lead.need_score}</span></div>
+    <div class="row"><span>Timeline</span><span>${lead.timeline_score}</span></div>
+    <div class="row"><span>Fit</span><span>${lead.fit_score}</span></div>
+    <div class="row"><span>Budget Range</span><span>${lead.budget_range || '—'}</span></div>
+    <div class="row"><span>Est. Deal Value</span><span>${fmtMoney(lead.deal_value_estimate)}</span></div>
+    <div class="row"><span>Notes</span><span>${lead.notes || '—'}</span></div>
+  `;
+  document.getElementById('modalOverlay').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('open');
+}
+
+async function loadAll() {
+  try {
+    const [dash, leads] = await Promise.all([
+      fetchJSON('/dashboard/'),
+      fetchJSON('/leads/?limit=200'),
+    ]);
+    renderStats(dash);
+    renderCharts(dash);
+    renderActivity(dash.recent_activities);
+    allLeads = leads;
+    renderLeads();
+  } catch (e) {
+    document.getElementById('statsGrid').innerHTML =
+      `<div class="empty-state">Could not reach API at ${API_BASE}. Is the server running?</div>`;
+    console.error(e);
+  }
+}
+
+loadAll();
+setInterval(loadAll, 30000); // auto-refresh every 30s
+</script>
+
+</body>
+</html>

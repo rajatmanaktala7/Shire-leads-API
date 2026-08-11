@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QBot — Shire Villas</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: 'Inter', -apple-system, sans-serif;
+    background: linear-gradient(135deg, #1b3a2b, #0f251a);
+    min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .chat-card {
+    background: #f6f1e7; border-radius: 16px; width: 100%; max-width: 420px;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.35); overflow: hidden;
+  }
+  .chat-header { background: #1b3a2b; color: #f6f1e7; padding: 18px 20px; }
+  .chat-header h2 { margin: 0; font-size: 17px; }
+  .chat-header p { margin: 4px 0 0; font-size: 12px; opacity: 0.75; }
+  .chat-body { height: 380px; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .msg { max-width: 80%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.4; }
+  .msg.bot { background: white; align-self: flex-start; border-bottom-left-radius: 4px; }
+  .msg.user { background: #c9a24b; color: #1b3a2b; align-self: flex-end; border-bottom-right-radius: 4px; }
+  .chat-input { display: flex; border-top: 1px solid #e5ddca; padding: 12px; gap: 8px; }
+  .chat-input input {
+    flex: 1; border: 1px solid #ddd; border-radius: 20px; padding: 10px 16px; font-size: 14px; outline: none;
+  }
+  .chat-input button {
+    background: #1b3a2b; color: white; border: none; border-radius: 20px;
+    padding: 10px 18px; cursor: pointer; font-size: 14px;
+  }
+  .result-card { padding: 16px; background: white; margin: 0 16px 16px; border-radius: 10px; font-size: 13px; }
+  .result-card .score { font-size: 32px; font-weight: 700; color: #1b3a2b; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; color: white; margin-top: 4px; }
+  .badge.HOT { background: #d9534f; } .badge.WARM { background: #e0a03c; } .badge.COLD { background: #4a7fb5; }
+</style>
+</head>
+<body>
+
+<div class="chat-card">
+  <div class="chat-header">
+    <h2>QBot — Shire Villas</h2>
+    <p>Siolim, North Goa · 4BHK from ₹10 Cr</p>
+  </div>
+  <div class="chat-body" id="chatBody"></div>
+  <div id="resultArea"></div>
+  <div class="chat-input" id="inputArea">
+    <input id="userInput" placeholder="Type your answer..." onkeydown="if(event.key==='Enter') send()">
+    <button onclick="send()">Send</button>
+  </div>
+</div>
+
+<script>
+// Set this to your deployed Railway URL, or leave as-is if this file
+// is served from the same API (e.g. mounted at /app/chatbot.html).
+const API_BASE = window.location.origin;
+
+const QUESTIONS = [
+  { id: 'name', text: "Hi! I'm QBot from Shire Villas. What's your name?" },
+  { id: 'budget', text: "Great to meet you. What budget range are you considering — 10-15 Cr, 15-20 Cr, or 20 Cr+?" },
+  { id: 'timeline', text: "And what's your timeline — 0-3 months, 3-6 months, 6-12 months, or just exploring?" },
+  { id: 'authority', text: "Are you the sole decision maker, or deciding jointly with family?" },
+  { id: 'need', text: "Is this a second home, an investment, or a relocation to Goa?" },
+  { id: 'fit', text: "Last one — any specific preferences on villa location or size within Siolim?" },
+  { id: 'contact', text: "Perfect, almost done. What's the best phone number or email to reach you on?" },
+];
+
+let step = 0;
+let answers = {};
+let contactInfo = {};
+
+function addMsg(text, cls) {
+  const body = document.getElementById('chatBody');
+  const div = document.createElement('div');
+  div.className = 'msg ' + cls;
+  div.textContent = text;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+}
+
+function askNext() {
+  if (step < QUESTIONS.length) {
+    addMsg(QUESTIONS[step].text, 'bot');
+  } else {
+    finish();
+  }
+}
+
+async function send() {
+  const input = document.getElementById('userInput');
+  const val = input.value.trim();
+  if (!val) return;
+  addMsg(val, 'user');
+
+  const q = QUESTIONS[step];
+  if (q.id === 'name') contactInfo.name = val;
+  else if (q.id === 'contact') {
+    if (val.includes('@')) contactInfo.email = val;
+    else contactInfo.phone = val;
+  } else {
+    answers[q.id] = val;
+  }
+
+  input.value = '';
+  step++;
+  setTimeout(askNext, 400);
+}
+
+async function finish() {
+  document.getElementById('inputArea').style.display = 'none';
+  addMsg("Thanks! Scoring your profile now...", 'bot');
+
+  try {
+    const res = await fetch(API_BASE + '/leads/qualify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        lead: {
+          name: contactInfo.name || 'Unknown',
+          email: contactInfo.email || null,
+          phone: contactInfo.phone || null,
+          source: 'chatbot',
+        },
+        answers: Object.entries(answers).map(([question_id, answer]) => ({ question_id, answer })),
+      }),
+    });
+    const data = await res.json();
+    const lead = data.lead;
+
+    document.getElementById('resultArea').innerHTML = `
+      <div class="result-card">
+        <div>Your Score</div>
+        <div class="score">${lead.overall_score}</div>
+        <span class="badge ${lead.temperature}">${lead.temperature} LEAD</span>
+        <p style="margin-top:10px;">${data.recommended_action}</p>
+      </div>
+    `;
+  } catch (e) {
+    document.getElementById('resultArea').innerHTML =
+      `<div class="result-card">Could not submit — please check your connection and try again.</div>`;
+  }
+}
+
+askNext();
+</script>
+
+</body>
+</html>
