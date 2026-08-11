@@ -40,6 +40,16 @@ def health():
     return {"status": "ok", "env": settings.ENV}
 
 
+@app.get("/config")
+def public_config():
+    """
+    Safe, non-secret settings the frontend needs at runtime. A Pixel ID
+    is not sensitive (it's visible in every page's HTML source anyway),
+    so this is fine to expose without auth.
+    """
+    return {"meta_pixel_id": settings.META_PIXEL_ID}
+
+
 @app.get("/")
 def root():
     return {
