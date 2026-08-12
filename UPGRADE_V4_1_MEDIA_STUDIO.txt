@@ -1,0 +1,45 @@
+SHIRE VILLAS AI REVENUE OS V4.1 - CLOUDINARY MEDIA STUDIO
+
+WHAT CHANGED
+- Signed Cloudinary uploads. API secret never goes to the browser.
+- Drag/choose multiple campaign gallery photos.
+- Replace/remove hero image.
+- Heavy project video upload directly from browser to Cloudinary.
+- Cloudinary Upload Widget handles chunked upload for large files.
+- Embedded project film on the dynamic landing page.
+- No Railway Volume and no UPLOAD_DIR are required.
+- Every campaign stores only Cloudinary URLs in the database.
+
+RAILWAY VARIABLES REQUIRED
+CLOUDINARY_CLOUD_NAME=<already added>
+CLOUDINARY_API_KEY=<already added>
+CLOUDINARY_API_SECRET=<already added>
+
+KEEP YOUR EXISTING VARIABLES
+ENV=production
+DATABASE_URL=...
+TEAM_API_KEY=...
+SECRET_KEY=...
+GROQ_API_KEY=...
+GROQ_MODEL=...
+META_PIXEL_ID=...
+FLOWCONNECT_WEBHOOK_URL=... (when available)
+FLOWCONNECT_API_KEY=... (when available)
+FLOWCONNECT_WEBHOOK_SECRET=... (when available)
+
+HOW YOUR TEAM USES IT
+1. Open /app/
+2. Login with TEAM_API_KEY.
+3. Open Landing Studio.
+4. Choose a campaign or duplicate one.
+5. Click hero/gallery/video upload boxes.
+6. Cloudinary opens a drag-and-drop uploader with upload progress.
+7. Select/upload files from computer. Heavy videos upload directly to Cloudinary.
+8. Preview on the right.
+9. Click Save & Publish.
+10. Public URL: /app/landing.html?campaign=<slug>
+
+IMPORTANT
+- Cloudinary account/plan upload size limits still apply.
+- For large videos, use a stable internet connection.
+- Do not put CLOUDINARY_API_SECRET in GitHub or browser JavaScript.
