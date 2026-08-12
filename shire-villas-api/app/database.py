@@ -19,5 +19,5 @@ def get_db():
         db.close()
 
 def init_db():
-    from app.models import lead  # noqa: F401
+    from app.models import lead, bot  # noqa: F401
     Base.metadata.create_all(bind=engine)
