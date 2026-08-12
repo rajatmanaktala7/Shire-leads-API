@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Shire Villas - Siolim, North Goa</title>
+<style>
+  :root { --forest:#1b3a2b; --canopy:#0f251a; --gold:#c9a24b; --cream:#f6f1e7; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:Arial,sans-serif; background:var(--cream); color:var(--canopy); line-height:1.6; }
+  .hero { background:var(--canopy); color:var(--cream); min-height:88vh; display:flex; align-items:center; justify-content:center; padding:60px 24px; text-align:center; }
+  .hero-inner { max-width:800px; }
+  .eyebrow { color:var(--gold); text-transform:uppercase; letter-spacing:3px; margin-bottom:18px; font-size:12px; }
+  h1 { font-family:Georgia,serif; font-size:clamp(40px,7vw,72px); font-weight:500; line-height:1.08; margin-bottom:20px; }
+  .hero p { max-width:600px; margin:0 auto 30px; opacity:.84; font-size:18px; }
+  .cta { background:var(--gold); color:var(--canopy); border:0; padding:15px 30px; cursor:pointer; font-weight:700; }
+  .facts { display:flex; justify-content:center; gap:50px; margin-top:45px; flex-wrap:wrap; }
+  .fact strong { display:block; color:var(--gold); font-size:30px; font-family:Georgia,serif; }
+  .content { max-width:1000px; margin:auto; padding:80px 24px; text-align:center; }
+  .content h2 { font-family:Georgia,serif; font-size:38px; color:var(--forest); margin-bottom:12px; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:26px; margin-top:40px; text-align:left; }
+  .card { background:#fff; padding:26px; border-radius:10px; }
+  .card h3 { color:var(--forest); margin-bottom:8px; }
+  .chat-section { background:var(--forest); color:#fff; padding:70px 24px 20px; text-align:center; }
+  .chat-wrap { max-width:460px; margin:30px auto 0; overflow:hidden; border-radius:12px 12px 0 0; }
+  iframe { width:100%; height:560px; border:0; display:block; }
+  footer { padding:25px; text-align:center; font-size:12px; }
+  @media(max-width:800px){ .cards{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<section class="hero">
+  <div class="hero-inner">
+    <div class="eyebrow">Siolim · North Goa</div>
+    <h1>Eighteen villas.<br>One private stretch of Goa.</h1>
+    <p>Ultra-luxury 4BHK villas in Siolim, North Goa. Speak with QBot to share your preferences and request current pricing and availability.</p>
+    <button class="cta" onclick="document.getElementById('chat').scrollIntoView({behavior:'smooth'})">Check pricing &amp; availability</button>
+    <div class="facts">
+      <div class="fact"><strong>18</strong>Villas total</div>
+      <div class="fact"><strong>4BHK</strong>Every unit</div>
+      <div class="fact"><strong>Siolim</strong>North Goa</div>
+    </div>
+  </div>
+</section>
+
+<section class="content">
+  <h2>Discover Shire Villas</h2>
+  <p>Tell us what you are looking for and our team can help arrange the right next step.</p>
+  <div class="cards">
+    <div class="card"><h3>Private living</h3><p>A boutique collection of ultra-luxury villas designed for owners seeking space and privacy.</p></div>
+    <div class="card"><h3>North Goa location</h3><p>Siolim offers access to the wider North Goa lifestyle while retaining a quieter residential character.</p></div>
+    <div class="card"><h3>Qualified assistance</h3><p>QBot captures your requirements so the sales team can respond with the most relevant information.</p></div>
+  </div>
+</section>
+
+<section class="chat-section" id="chat">
+  <h2>Talk to QBot</h2>
+  <p>A few quick questions help us understand your requirement.</p>
+  <div class="chat-wrap"><iframe id="chatFrame" title="QBot qualification chat"></iframe></div>
+</section>
+
+<footer>Shire Villas · Siolim, North Goa</footer>
+
+<script>
+const origin = window.location.origin;
+
+async function createVisit() {
+  try {
+    const qs = new URLSearchParams(window.location.search);
+    const payload = {
+      source: qs.get('utm_source') || 'landing_page',
+      campaign: qs.get('utm_campaign'),
+      medium: qs.get('utm_medium'),
+      page: window.location.pathname,
+      referrer: document.referrer || null
+    };
+
+    const res = await fetch(origin + '/leads/track', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload)
+    });
+
+    if (!res.ok) throw new Error('visit tracking failed');
+    const visit = await res.json();
+    sessionStorage.setItem('shireVisitId', visit.id);
+    return visit.id;
+  } catch (e) {
+    console.warn(e);
+    return null;
+  }
+}
+
+async function initMetaPixel() {
+  try {
+    const res = await fetch(origin + '/config');
+    const cfg = await res.json();
+    if (!cfg.meta_pixel_id) return;
+
+    !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+    n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+    n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+    t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(
+      window,document,'script','https://connect.facebook.net/en_US/fbevents.js'
+    );
+    fbq('init', cfg.meta_pixel_id);
+    fbq('track', 'PageView');
+  } catch (e) {
+    console.warn('Meta Pixel not loaded.', e);
+  }
+}
+
+(async function boot(){
+  await initMetaPixel();
+
+  let visitId = sessionStorage.getItem('shireVisitId');
+  if (!visitId) visitId = await createVisit();
+
+  // Correct analytics: PageView is a visit. It is NOT a Meta Lead event.
+  document.getElementById('chatFrame').src =
+    origin + '/app/chatbot.html' +
+    (visitId ? '?visit_id=' + encodeURIComponent(visitId) : '');
+})();
+</script>
+</body>
+</html>
