@@ -12,7 +12,7 @@ from app.routers import leads, activities, dashboard, ai, organic, partners, ref
 async def lifespan(app: FastAPI):
     settings.validate(); init_db(); yield
 
-app = FastAPI(title=settings.PROJECT_NAME, version="4.3.0", lifespan=lifespan)
+app = FastAPI(title=settings.PROJECT_NAME, version="4.4.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=settings.CORS_ORIGINS,
                    allow_credentials=False,
                    allow_methods=["GET","POST","PUT","DELETE","OPTIONS"],
@@ -28,7 +28,7 @@ app.include_router(marketing.router)
 app.include_router(integrations.router)
 
 @app.get("/health")
-def health(): return {"status":"ok","env":settings.ENV,"version":"4.3.0","system":"Shire Villas AI Revenue OS V4.3"}
+def health(): return {"status":"ok","env":settings.ENV,"version":"4.4.0","system":"Shire Villas AI Revenue OS V4.4"}
 
 
 
@@ -50,13 +50,13 @@ def auth_login(payload: LoginRequest):
         "ok": True,
         "token": create_session_token(),
         "expires_in": 43200,
-        "version": "4.3.0",
+        "version": "4.4.0",
     }
 
 
 @app.get("/auth/check", dependencies=[Depends(require_team_key)])
 def auth_check():
-    return {"ok": True, "authenticated": True, "version": "4.3.0"}
+    return {"ok": True, "authenticated": True, "version": "4.4.0"}
 
 
 @app.get("/config")
