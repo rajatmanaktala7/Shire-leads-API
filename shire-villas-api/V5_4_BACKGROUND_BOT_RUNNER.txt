@@ -1,0 +1,29 @@
+SHIRE VILLAS AI REVENUE OS V5.4
+
+CONFIRMED BEFORE THIS FIX
+- Tavily /usage PASS (200)
+- Tavily /search PASS (200)
+- Dashboard showed Bot failed: TIMEOUT
+
+ROOT CAUSE
+The dashboard API helper times out normal requests after 12 seconds.
+A Buyer/NRI/Broker run may take much longer because it performs multiple
+Tavily searches plus quality filtering/Groq checks.
+
+V5.4 FIX
+- Buyer Hunter starts in the background.
+- NRI Hunter starts in the background.
+- Broker Hunter starts in the background.
+- Daily Lead Suite starts in the background.
+- Dashboard gets an immediate response instead of waiting for completion.
+- Dashboard polls Bot Run History every 4 seconds and displays progress.
+- V5.3 Tavily production-search fixes are preserved.
+
+TEST ORDER
+1. /health -> 5.4.0
+2. Test Tavily from Railway -> PASS/PASS
+3. Test Buyer Payload -> PASS
+4. Run Buyer Hunter
+5. It should immediately say "started"
+6. Bot Run History should show RUNNING and later SUCCESS/PARTIAL/FAILED
+7. results_seen should become greater than 0 when Tavily returns search results.
