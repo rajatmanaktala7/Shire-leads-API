@@ -106,7 +106,7 @@ async def _tavily_search(query: str, max_results: int) -> list[dict]:
         r = await client.post(
             "https://api.tavily.com/search",
             headers={
-                "Authorization": f"Bearer {settings.TAVILY_API_KEY}",
+                "Authorization": f"Bearer {(settings.TAVILY_API_KEY or '').strip()}",
                 "Content-Type": "application/json",
             },
             json=payload,
@@ -149,6 +149,59 @@ async def _brave_search(query: str, max_results: int) -> list[dict]:
             "provider_score": 0.55,
         })
     return out
+
+
+
+def tavily_key_diagnostics() -> dict:
+    key = (settings.TAVILY_API_KEY or "").strip()
+    return {
+        "configured": bool(key),
+        "prefix": (key[:9] + "…") if key else None,
+        "length": len(key),
+    }
+
+
+async def tavily_connection_test() -> dict:
+    key = (settings.TAVILY_API_KEY or "").strip()
+    result = tavily_key_diagnostics()
+
+    if not key:
+        return {**result, "usage_test": "NOT_CONFIGURED", "search_test": "NOT_CONFIGURED"}
+
+    headers = {"Authorization": f"Bearer {key}"}
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        try:
+            r = await client.get("https://api.tavily.com/usage", headers=headers)
+            result["usage_status_code"] = r.status_code
+            result["usage_test"] = "PASS" if r.status_code == 200 else "FAIL"
+            if r.status_code != 200:
+                result["usage_error"] = r.text[:500]
+        except Exception as exc:
+            result["usage_test"] = "ERROR"
+            result["usage_error"] = str(exc)[:500]
+
+        try:
+            r = await client.post(
+                "https://api.tavily.com/search",
+                headers={**headers, "Content-Type": "application/json"},
+                json={
+                    "query": "luxury villa North Goa",
+                    "search_depth": "basic",
+                    "max_results": 1,
+                    "safe_search": True,
+                },
+            )
+            result["search_status_code"] = r.status_code
+            result["search_test"] = "PASS" if r.status_code == 200 else "FAIL"
+            if r.status_code == 200:
+                result["search_results"] = len(r.json().get("results", []))
+            else:
+                result["search_error"] = r.text[:500]
+        except Exception as exc:
+            result["search_test"] = "ERROR"
+            result["search_error"] = str(exc)[:500]
+
+    return result
 
 
 async def web_search(query: str, max_results: int | None = None) -> tuple[str, list[dict]]:

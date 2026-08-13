@@ -12,6 +12,7 @@ from app.services.lead_bot_service import (
     run_buyer_hunter,
     run_broker_hunter,
     run_daily_suite,
+    tavily_connection_test,
 )
 
 router = APIRouter(
@@ -92,3 +93,8 @@ async def run_daily():
     if not (settings.TAVILY_API_KEY or settings.BRAVE_SEARCH_API_KEY):
         raise HTTPException(422, "Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY in Railway.")
     return await run_daily_suite()
+
+
+@router.get("/diagnostics/tavily")
+async def tavily_diagnostics():
+    return await tavily_connection_test()

@@ -1,0 +1,17 @@
+SHIRE VILLAS AI REVENUE OS V5.1
+
+Purpose:
+Diagnose Tavily authentication from INSIDE Railway without exposing the secret.
+
+Changes:
+- TAVILY_API_KEY is trimmed before use.
+- New dashboard button: Test Tavily from Railway.
+- Safe output shows only key prefix and length.
+- Tests both /usage and /search from Railway.
+
+Expected healthy result:
+Configured: true
+/usage: PASS (200)
+/search: PASS (200)
+
+After both pass, run Buyer Intent Hunter.

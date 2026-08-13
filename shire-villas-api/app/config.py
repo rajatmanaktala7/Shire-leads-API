@@ -43,8 +43,8 @@ class Settings:
 
     # Advanced Organic Lead Bots. Tavily is the recommended search provider;
     # Brave Search can be configured as a fallback. Keys remain server-side.
-    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
-    BRAVE_SEARCH_API_KEY: str = os.getenv("BRAVE_SEARCH_API_KEY", "")
+    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "").strip()
+    BRAVE_SEARCH_API_KEY: str = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
     LEAD_BOT_PROVIDER: str = os.getenv("LEAD_BOT_PROVIDER", "auto")
     LEAD_BOT_MIN_SCORE: float = float(os.getenv("LEAD_BOT_MIN_SCORE", "68"))
     LEAD_BOT_MAX_RESULTS_PER_QUERY: int = int(os.getenv("LEAD_BOT_MAX_RESULTS_PER_QUERY", "8"))
