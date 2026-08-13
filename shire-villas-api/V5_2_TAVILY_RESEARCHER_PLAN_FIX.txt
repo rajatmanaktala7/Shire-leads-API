@@ -1,0 +1,24 @@
+SHIRE VILLAS AI REVENUE OS V5.2
+
+CONFIRMED ROOT CAUSE
+Tavily diagnostics returned:
+  /usage: PASS (200)
+  /search: FAIL (403)
+  safe_search is only available on Gold and Silver Enterprise plans.
+
+FIX
+- Removed the enterprise-only `safe_search` parameter from every Tavily Search request.
+- Removed it from the Railway Tavily diagnostic search request.
+- Preserved Tavily authentication, lead quality scoring, Groq filtering,
+  duplicate filtering, Organic Pipeline, broker/NRI bots, Cloudinary,
+  landing pages, Flowconnect structure, and all existing V5.1 features.
+
+EXPECTED AFTER DEPLOYMENT
+Dashboard -> AI Lead Bots -> Test Tavily from Railway:
+  Configured: true
+  /usage: PASS (200)
+  /search: PASS (200)
+
+Then run Buyer Intent Hunter first.
+
+No Tavily plan upgrade is required for normal Search.
