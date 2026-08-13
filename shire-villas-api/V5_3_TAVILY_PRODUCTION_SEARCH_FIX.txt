@@ -1,0 +1,26 @@
+SHIRE VILLAS AI REVENUE OS V5.3
+
+CONFIRMED STATE BEFORE THIS FIX
+- Railway Tavily /usage: PASS (200)
+- Railway Tavily /search diagnostic: PASS (200)
+- Buyer Hunter searches: 403
+
+V5.3 FIX
+- Buyer/NRI/Broker Tavily requests now use the SAME minimal request profile
+  that passed the Railway diagnostic.
+- search_depth = basic
+- max_results retained
+- optional time_range/topic/include flags removed from production Tavily call
+- Groq remains the semantic quality gate after search
+- Basic Tavily Search uses 1 credit/request instead of 2 for advanced search.
+- Detailed Tavily error response is now preserved in Bot Run History.
+- Added "Test Buyer Payload" diagnostic to test the exact production search.
+
+EXPECTED TEST ORDER
+1. /health -> 5.3.0
+2. AI Lead Bots -> Test Tavily from Railway -> /search PASS (200)
+3. Click Test Buyer Payload -> PASS
+4. Run Buyer Hunter
+5. Check results_seen > 0; opportunities_created may be 0 if quality filters reject all.
+
+No Tavily plan upgrade required.
