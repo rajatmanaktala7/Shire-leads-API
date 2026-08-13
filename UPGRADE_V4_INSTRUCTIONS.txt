@@ -1,0 +1,51 @@
+SHIRE VILLAS AI REVENUE OS V4
+
+WHAT IS NEW
+- Premium simplified Revenue Command Center.
+- Landing Page Studio: edit headlines, descriptions, price CTA, brochure/video, SEO, hero and gallery images.
+- Multiple campaign landing pages using ?campaign=slug.
+- Image uploads stored under UPLOAD_DIR; mount a Railway persistent volume at /data.
+- Flowconnect handoff layer. Shire remains acquisition/qualification/marketing OS; Flowconnect is final CRM.
+- Qualified website leads, promoted organic opportunities and promoted referrals automatically queue a Flowconnect sync.
+- Manual Flowconnect Sync button on every CRM lead.
+
+RAILWAY VARIABLES TO ADD
+FLOWCONNECT_WEBHOOK_URL=<incoming webhook/API URL supplied/configured in Flowconnect>
+FLOWCONNECT_API_KEY=<only if your Flowconnect endpoint requires bearer auth>
+FLOWCONNECT_WEBHOOK_SECRET=<optional shared secret>
+UPLOAD_DIR=/data/uploads
+
+KEEP EXISTING
+ENV=production
+TEAM_API_KEY=...
+SECRET_KEY=...
+DATABASE_URL=...
+CORS_ORIGINS=https://YOUR-DOMAIN
+GROQ_API_KEY=...
+GROQ_MODEL=...
+META_PIXEL_ID=...
+
+RAILWAY VOLUME
+Create/attach a persistent volume and mount it at /data. Without a persistent volume, uploaded landing-page pictures may disappear on redeploy.
+
+LANDING URLS
+Main: /app/landing.html
+Campaign: /app/landing.html?campaign=delhi-hni-august
+
+FLOWCONNECT FIELD MAPPING PAYLOAD
+external_id -> Shire Lead ID
+contact.name -> Contact Name
+contact.phone -> Phone
+contact.email -> Email
+contact.company -> Company
+source -> Lead Source
+qualification.temperature -> Lead Temperature
+qualification.status -> Pipeline status
+qualification.overall_score -> AI/Intent score
+qualification.budget_range -> Budget
+qualification.timeline -> Purchase timeline
+qualification.notes -> Notes
+project -> Shire Villas
+
+IMPORTANT
+Flowconnect's public website confirms CRM, landing pages/forms, WhatsApp marketing and pipelines, but its exact account-specific lead-ingestion endpoint is not publicly documented. Configure FLOWCONNECT_WEBHOOK_URL using the incoming webhook/API URL available in your Flowconnect account or supplied by Flowconnect support. Do not guess an endpoint.

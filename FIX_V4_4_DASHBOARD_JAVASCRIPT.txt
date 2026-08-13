@@ -1,0 +1,23 @@
+SHIRE VILLAS AI REVENUE OS V4.4
+
+CONFIRMED ROOT CAUSE FIXED
+The V4.3 dashboard contained one extra closing brace in frontend/index.html
+after renderMediaPreviews(). This caused the browser to reject the entire
+JavaScript file, so the Team Key button could appear to do nothing.
+
+V4.4 keeps the V4.3 signed-session login and all existing features.
+Only the confirmed JavaScript syntax fault was corrected, plus version labels.
+
+VALIDATION COMPLETED BEFORE PACKAGING
+- All Python files compile successfully.
+- Dashboard inline JavaScript passes `node --check`.
+- __pycache__ and .pyc files are excluded from this ZIP.
+
+DEPLOY
+Replace the COMPLETE shire-villas-api folder using the Git/PowerShell method.
+Preserve app/ and frontend/ folder structure.
+
+TEST
+1. /health -> version 4.4.0
+2. /app/ -> enter TEAM_API_KEY
+3. Button should show "Signing in..." and open Command Center.
