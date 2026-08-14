@@ -258,7 +258,7 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
 
                 enrichment = await enrich_candidate(item["title"], text, item["url"], ai)
                 person_name = ai.get("person_name") or (enrichment.get("apollo") or {}).get("person_name")
-                if settings.LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER and not (person_name or enrichment.get("phone") or enrichment.get("email")):
+                if settings.LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER and not person_name:
                     no_identity += 1
                     low_quality += 1
                     continue
@@ -272,6 +272,22 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
                     no_contact += 1
 
                 intel = build_intelligence_payload(item["title"], item["url"], ai, score, enrichment)
+
+                # V6.1 hard gates: buyer hunter stores only a named buyer with
+                # attributable contact. Incomplete named buyers are counted as
+                # qualified_without_contact and are not polluted into the sales pipeline.
+                if not intel.get("person_identity_verified"):
+                    no_identity += 1
+                    low_quality += 1
+                    continue
+                if not intel.get("contact_attributable"):
+                    no_contact += 1
+                    low_quality += 1
+                    continue
+                if intel.get("band") in {"REJECT", "IDENTITY_REQUIRED", "CONTACT_ENRICHMENT_REQUIRED"}:
+                    low_quality += 1
+                    continue
+
                 opp = OrganicOpportunity(
                     person_name=person_name,
                     brand_company=ai.get("company") or (enrichment.get("apollo") or {}).get("organization"),
@@ -285,7 +301,7 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
                     timeline_hint=ai.get("timeline_hint") or score.get("timeline_hint"),
                     intent_type=intel["band"],
                     intent_score=score["total"],
-                    verified=enrichment.get("contact_status") in {"PUBLIC_FOUND", "VERIFIED_PROVIDER"},
+                    verified=enrichment.get("contact_status") in {"ATTRIBUTED_PUBLIC", "VERIFIED_PROVIDER"} and bool(intel.get("contact_attributable")),
                     notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name}."),
                 )
                 db.add(opp); db.flush()

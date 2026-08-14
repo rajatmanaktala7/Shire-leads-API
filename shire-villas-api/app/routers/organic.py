@@ -64,7 +64,7 @@ def _to_intelligence_row(o: OrganicOpportunity) -> dict:
         "contact_evidence_urls": intel.get("contact_evidence_urls") or [],
         "linkedin_url": intel.get("linkedin_url"),
         "missing_qualification": intel.get("missing_qualification") or [],
-        "actionable": bool((o.phone or o.email) and o.intent_score >= 70 and (o.intent_type or "") != "REJECT"),
+        "actionable": bool(intel.get("crm_ready")),
     }
 
 
@@ -143,7 +143,7 @@ async def enrich_opportunity(opportunity_id: str, db: Session = Depends(get_db))
     o.timeline_hint = ai.get("timeline_hint") or score.get("timeline_hint") or o.timeline_hint
     o.intent_type = intel["band"]
     o.intent_score = score["total"]
-    o.verified = enrichment.get("contact_status") in {"PUBLIC_FOUND", "VERIFIED_PROVIDER"} or o.verified
+    o.verified = bool(intel.get("contact_attributable")) and enrichment.get("contact_status") in {"ATTRIBUTED_PUBLIC", "VERIFIED_PROVIDER"}
     o.notes = dump_intelligence_notes(intel, "Re-enriched from dashboard.")
     o.suggested_response = suggested_response(o)
     db.commit(); db.refresh(o)
@@ -162,8 +162,19 @@ def promote_opportunity(opportunity_id: str, background_tasks: BackgroundTasks, 
         raise HTTPException(422, "Phone or email required before promoting to CRM")
 
     intel = parse_intelligence_notes(o.notes)
-    if intel and intel.get("classification") not in {"REAL_BUYER", "POSSIBLE_BUYER"}:
+    if not intel:
+        raise HTTPException(422, "Buyer Intelligence record required before CRM promotion")
+    if intel.get("classification") not in {"REAL_BUYER", "POSSIBLE_BUYER"}:
         raise HTTPException(422, "Only genuine buyer classifications can be promoted to CRM")
+    if not intel.get("person_identity_verified"):
+        raise HTTPException(422, "A named human buyer identity is required before CRM promotion")
+    if not intel.get("contact_attributable"):
+        raise HTTPException(422, "Phone/email must be attributable to the named buyer before CRM promotion")
+    if not intel.get("shire_budget_fit"):
+        raise HTTPException(422, "Buyer budget must be confirmed at Shire Villas fit before CRM promotion")
+    if not intel.get("crm_ready"):
+        missing = ", ".join(intel.get("missing_qualification") or [])
+        raise HTTPException(422, f"Buyer is not CRM-ready. Missing: {missing or 'qualification'}")
 
     temp = LeadTemperature.HOT if o.intent_score >= 80 else LeadTemperature.WARM if o.intent_score >= 70 else LeadTemperature.COLD
     notes = (

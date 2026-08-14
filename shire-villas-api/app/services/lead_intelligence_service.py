@@ -165,34 +165,80 @@ def classify_rule_based(title: str, text: str, url: str) -> str:
     return "UNKNOWN"
 
 
+def _budget_top_crore(budget_hint: str | None) -> float | None:
+    if not budget_hint:
+        return None
+    nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", budget_hint)]
+    return max(nums) if nums else None
+
+
+def _looks_like_named_person(name: str | None) -> bool:
+    if not name:
+        return False
+    n = re.sub(r"\s+", " ", str(name)).strip()
+    if len(n) < 4 or len(n) > 80:
+        return False
+    bad = {
+        "identity pending", "web opportunity", "admin", "sales", "team",
+        "contact", "support", "info", "property", "properties", "realty",
+        "estate", "developer", "broker", "company",
+    }
+    low = n.lower()
+    if low in bad or any(low.startswith(x + " ") for x in bad):
+        return False
+    parts = [p for p in re.split(r"\s+", n) if p]
+    return 1 <= len(parts) <= 5 and any(ch.isalpha() for ch in n)
+
+
+def _email_is_generic(email: str | None) -> bool:
+    if not email or "@" not in email:
+        return True
+    local = email.split("@", 1)[0].lower()
+    generic = (
+        "info", "sales", "contact", "hello", "admin", "support", "office",
+        "team", "enquiry", "enquiries", "marketing", "groupmail", "care",
+    )
+    return local in generic or any(local.startswith(x + ".") or local.startswith(x + "_") for x in generic)
+
+
+def _contact_is_attributable(person_name: str | None, email: str | None, phone: str | None, apollo: dict | None) -> bool:
+    if not _looks_like_named_person(person_name):
+        return False
+    apollo = apollo or {}
+    if apollo.get("matched"):
+        apollo_name = (apollo.get("person_name") or "").strip().lower()
+        wanted = (person_name or "").strip().lower()
+        if apollo_name and (apollo_name == wanted or wanted in apollo_name or apollo_name in wanted):
+            return bool(apollo.get("email") or apollo.get("phone"))
+    if email and not _email_is_generic(email):
+        # Public email may be useful, but without provider identity it is not verified.
+        return True
+    # A bare phone scraped from a page is not attributable to the named buyer by itself.
+    return False
+
 def deterministic_score(text: str, classification: str, phone: str | None = None, email: str | None = None) -> dict:
     b = (text or "").lower()
-    # 25 purchase intent
+
     if any(x in b for x in FIRST_PERSON) and any(x in b for x in BUYING_PHRASES):
         intent = 25
     elif any(x in b for x in ["looking to buy", "want to buy", "need a villa", "planning to buy"]):
-        intent = 22
+        intent = 20
     elif any(x in b for x in BUYING_PHRASES):
-        intent = 14
+        intent = 10
     else:
         intent = 0
 
-    # 20 budget fit
     budget_hint = infer_budget(b)
-    budget = 5 if budget_hint is None else 0
-    if budget_hint:
-        nums = [float(x) for x in re.findall(r"\d+(?:\.\d+)?", budget_hint)]
-        top = max(nums) if nums else 0
-        if top >= 10:
-            budget = 20
-        elif top >= 8:
-            budget = 18
-        elif top >= 6:
-            budget = 10
-        else:
-            budget = 0
+    budget_top = _budget_top_crore(budget_hint)
+    if budget_top is None:
+        budget = 0
+    elif budget_top >= 10:
+        budget = 20
+    elif budget_top >= 8:
+        budget = 10
+    else:
+        budget = 0
 
-    # 15 location/property fit
     if "siolim" in b and "villa" in b:
         fit = 15
     elif any(x in b for x in ["assagao", "vagator", "morjim", "anjuna"]) and "villa" in b:
@@ -204,26 +250,24 @@ def deterministic_score(text: str, classification: str, phone: str | None = None
     else:
         fit = 0
 
-    # 15 timeline
     timeline_hint = infer_timeline(b)
-    timeline_map = {"0-3 months": 15, "3-6 months": 12, "6-12 months": 9, "Exploring": 2, None: 0}
-    timeline = timeline_map[timeline_hint]
+    timeline = {"0-3 months": 15, "3-6 months": 12, "6-12 months": 9, "Exploring": 2, None: 0}[timeline_hint]
 
-    # 10 purpose
     purpose = infer_purpose(b)
-    purpose_map = {"Second Home": 10, "Own Use": 10, "Relocation": 10, "Investment": 8, None: 0}
-    need = purpose_map[purpose]
+    need = {"Second Home": 10, "Own Use": 10, "Relocation": 10, "Investment": 8, None: 0}[purpose]
 
-    # 5 authority
     authority_hint = infer_authority(b)
     authority = 5 if authority_hint == "Likely principal" else 4 if authority_hint == "Joint decision" else 0
 
-    # 10 contactability
-    contactability = 10 if phone and email else 9 if phone else 8 if email else 0
+    # Contactability is deliberately conservative. Generic page contacts are not
+    # proof of buyer identity. The enrichment stage may later overwrite this with
+    # attributable contact status in build_intelligence_payload.
+    contactability = 2 if phone and email else 1 if (phone or email) else 0
 
     score = intent + budget + fit + timeline + need + authority + contactability
     if classification not in {"REAL_BUYER", "POSSIBLE_BUYER"}:
-        score = min(score, 49)
+        score = min(score, 39)
+
     return {
         "purchase_intent": intent,
         "budget": budget,
@@ -238,6 +282,7 @@ def deterministic_score(text: str, classification: str, phone: str | None = None
         "purpose": purpose,
         "authority_hint": authority_hint,
         "location": infer_location(b),
+        "budget_top_crore": budget_top,
     }
 
 
@@ -255,11 +300,31 @@ async def ai_classify(title: str, text: str, url: str) -> dict:
         "authority": infer_authority(text),
         "location": infer_location(text),
     }
-    fallback["buyer_intent"] = fallback["classification"] in {"REAL_BUYER", "POSSIBLE_BUYER"}
+    fallback["buyer_intent"] = False  # no named human can be proven by rule-only fallback
     if not settings.GROQ_API_KEY:
         return fallback
 
-    system = """You are Shire Villas' buyer-intelligence classifier. Shire sells ultra-luxury 4BHK villas in Siolim, North Goa, starting around INR 10 crore. Classify PUBLIC WEB evidence, not topical similarity. A news article, developer page, listing portal, SEO blog, generic social reel, or market report is NEVER a buyer lead. A buyer lead requires evidence that an identifiable person is personally considering, asking about, or planning a property purchase. Return ONLY valid JSON with keys: classification, person_name, company, buyer_intent, confidence, reason, budget_hint, timeline_hint, purpose, authority, location. classification must be one of REAL_BUYER,POSSIBLE_BUYER,BROKER,CHANNEL_PARTNER,DEVELOPER,PROPERTY_LISTING,NEWS,BLOG,MARKET_REPORT,GENERIC_SOCIAL_CONTENT,UNKNOWN. Never invent a person, company, budget, timeline, phone, or email. Use null when not evidenced."""
+    system = """You are Shire Villas' buyer-intelligence classifier. Shire sells ultra-luxury 4BHK villas in Siolim, North Goa, starting around INR 10 crore.
+
+Your task is NOT topical matching. Your task is to prove an identifiable HUMAN buyer signal from public evidence.
+
+HARD RULES:
+1. A company, developer, broker, property portal, SEO page, news article, market report, generic social post, listing, or business website is NEVER a REAL_BUYER.
+2. REAL_BUYER requires BOTH an identifiable person's name AND explicit evidence that this same person is personally considering, asking about, planning, or actively making a property purchase.
+3. POSSIBLE_BUYER may be used only when a named person exists but purchase intent is incomplete/ambiguous.
+4. If person_name is null, classification MUST NOT be REAL_BUYER or POSSIBLE_BUYER.
+5. Do not treat a website's phone/email as belonging to the buyer unless evidence ties it to that named person.
+6. Never invent person_name, company, budget, timeline, authority, phone, email, or location.
+7. Use null when evidence is missing.
+
+Return ONLY valid JSON with keys:
+classification, person_name, company, buyer_intent, confidence, reason,
+budget_hint, timeline_hint, purpose, authority, location.
+
+classification must be one of:
+REAL_BUYER,POSSIBLE_BUYER,BROKER,CHANNEL_PARTNER,DEVELOPER,PROPERTY_LISTING,
+NEWS,BLOG,MARKET_REPORT,GENERIC_SOCIAL_CONTENT,UNKNOWN."""
+
     payload = f"TITLE: {title}\nURL: {url}\nPUBLIC TEXT:\n{text[:6000]}"
     try:
         async with httpx.AsyncClient(timeout=18.0) as client:
@@ -282,11 +347,14 @@ async def ai_classify(title: str, text: str, url: str) -> dict:
         cls = str(data.get("classification") or fallback["classification"]).upper()
         if cls not in CONTENT_CLASSES:
             cls = fallback["classification"]
+        person_name = data.get("person_name") or None
+        if cls in {"REAL_BUYER", "POSSIBLE_BUYER"} and not _looks_like_named_person(person_name):
+            cls = "UNKNOWN"
         return {
             "classification": cls,
-            "person_name": data.get("person_name") or None,
+            "person_name": person_name,
             "company": data.get("company") or None,
-            "buyer_intent": bool(data.get("buyer_intent")) and cls in {"REAL_BUYER", "POSSIBLE_BUYER"},
+            "buyer_intent": bool(data.get("buyer_intent")) and cls in {"REAL_BUYER", "POSSIBLE_BUYER"} and _looks_like_named_person(person_name),
             "confidence": max(0, min(100, float(data.get("confidence") or 0))),
             "reason": str(data.get("reason") or "")[:500],
             "budget_hint": data.get("budget_hint") or fallback["budget_hint"],
@@ -315,7 +383,7 @@ async def fetch_public_page_contacts(url: str) -> dict:
 
 
 async def tavily_contact_lookup(person_name: str | None, company: str | None, source_url: str | None) -> dict:
-    if not settings.TAVILY_API_KEY or not (person_name or company):
+    if not settings.TAVILY_API_KEY or not _looks_like_named_person(person_name):
         return {"emails": [], "phones": [], "evidence_urls": []}
     terms = [x for x in [person_name, company] if x]
     q = ' "'.join(terms)
@@ -345,7 +413,7 @@ async def tavily_contact_lookup(person_name: str | None, company: str | None, so
 
 
 async def apollo_enrich(person_name: str | None, email: str | None, company_domain: str | None) -> dict:
-    if not settings.APOLLO_API_KEY or not (person_name or email):
+    if not settings.APOLLO_API_KEY or not _looks_like_named_person(person_name):
         return {"matched": False}
     params = {"reveal_personal_emails": "false", "reveal_phone_number": "false"}
     if email:
@@ -384,78 +452,163 @@ async def apollo_enrich(person_name: str | None, email: str | None, company_doma
 
 
 async def enrich_candidate(title: str, text: str, url: str, ai: dict) -> dict:
-    direct = extract_contacts(text)
-    page = await fetch_public_page_contacts(url)
-    emails = direct["emails"] + [e for e in page["emails"] if e not in direct["emails"]]
-    phones = direct["phones"] + [p for p in page["phones"] if p not in direct["phones"]]
-    evidence = [url] if (direct["emails"] or direct["phones"]) else []
-    if page.get("source") and page["source"] not in evidence:
-        evidence.append(page["source"])
+    person_name = ai.get("person_name")
+    if not _looks_like_named_person(person_name):
+        # We may observe business contacts on the source page, but we never expose
+        # them as buyer contact details when no human buyer identity is proven.
+        observed = extract_contacts(text)
+        page = await fetch_public_page_contacts(url)
+        has_business_contact = bool(observed["emails"] or observed["phones"] or page["emails"] or page["phones"])
+        return {
+            "phone": None,
+            "email": None,
+            "contact_status": "IDENTITY_REQUIRED" if has_business_contact else "NOT_FOUND",
+            "contact_evidence_urls": [],
+            "apollo": {"matched": False},
+            "contact_attributable": False,
+        }
 
-    lookup = await tavily_contact_lookup(ai.get("person_name"), ai.get("company"), url)
-    for e in lookup["emails"]:
-        if e not in emails: emails.append(e)
-    for p in lookup["phones"]:
-        if p not in phones: phones.append(p)
-    evidence.extend([u for u in lookup["evidence_urls"] if u not in evidence])
+    # Search specifically for the named person. Do not use generic page contacts as
+    # the buyer's contact unless a provider match or named-person lookup supports it.
+    lookup = await tavily_contact_lookup(person_name, ai.get("company"), url)
+    emails = list(lookup["emails"])
+    phones = list(lookup["phones"])
+    evidence = [u for u in lookup["evidence_urls"] if u]
 
     company_domain = domain(url)
-    apollo = await apollo_enrich(ai.get("person_name"), emails[0] if emails else None, company_domain if company_domain not in SOCIAL_DOMAINS else None)
+    apollo = await apollo_enrich(
+        person_name,
+        emails[0] if emails and not _email_is_generic(emails[0]) else None,
+        company_domain if company_domain not in SOCIAL_DOMAINS else None,
+    )
     if apollo.get("email") and apollo["email"] not in emails:
         emails.insert(0, apollo["email"])
     if apollo.get("phone") and apollo["phone"] not in phones:
         phones.insert(0, apollo["phone"])
 
-    status = "NOT_FOUND"
-    if phones or emails:
-        status = "VERIFIED_PROVIDER" if apollo.get("matched") else "PUBLIC_FOUND"
-    elif ai.get("person_name"):
+    email = emails[0] if emails else None
+    phone = phones[0] if phones else None
+    attributable = _contact_is_attributable(person_name, email, phone, apollo)
+
+    if apollo.get("matched") and attributable:
+        status = "VERIFIED_PROVIDER"
+    elif attributable and email and not _email_is_generic(email):
+        status = "ATTRIBUTED_PUBLIC"
+    elif email or phone:
+        status = "UNATTRIBUTED_CONTACT"
+        email = None
+        phone = None
+        attributable = False
+    else:
         status = "IDENTIFIED_NO_CONTACT"
 
     return {
-        "phone": phones[0] if phones else None,
-        "email": emails[0] if emails else None,
+        "phone": phone,
+        "email": email,
         "contact_status": status,
         "contact_evidence_urls": evidence[:5],
         "apollo": apollo,
+        "contact_attributable": attributable,
     }
 
 
 def build_intelligence_payload(title: str, url: str, ai: dict, score: dict, enrichment: dict) -> dict:
-    total = score["total"]
-    if total >= 90:
+    person_ok = _looks_like_named_person(ai.get("person_name") or (enrichment.get("apollo") or {}).get("person_name"))
+    buyer_class = ai.get("classification") in {"REAL_BUYER", "POSSIBLE_BUYER"} and bool(ai.get("buyer_intent"))
+    attributable_contact = bool(enrichment.get("contact_attributable")) and enrichment.get("contact_status") in {
+        "VERIFIED_PROVIDER", "ATTRIBUTED_PUBLIC"
+    }
+    budget_top = score.get("budget_top_crore")
+    explicit_budget_fail = budget_top is not None and budget_top < 8
+    shire_budget_fit = budget_top is not None and budget_top >= 10
+
+    # Recalculate the contact component only after attribution is known.
+    contact_points = 10 if attributable_contact and enrichment.get("phone") and enrichment.get("email") else 9 if attributable_contact and enrichment.get("phone") else 8 if attributable_contact and enrichment.get("email") else 0
+    total = (
+        score.get("purchase_intent", 0)
+        + score.get("budget", 0)
+        + score.get("location_fit", 0)
+        + score.get("timeline", 0)
+        + score.get("need", 0)
+        + score.get("authority", 0)
+        + contact_points
+    )
+    total = round(min(100, total), 1)
+    score["contactability"] = contact_points
+    score["total"] = total
+
+    if not buyer_class:
+        band = "REJECT"
+    elif not person_ok:
+        band = "IDENTITY_REQUIRED"
+    elif explicit_budget_fail:
+        band = "REJECT"
+    elif not attributable_contact:
+        band = "CONTACT_ENRICHMENT_REQUIRED"
+    elif not shire_budget_fit:
+        band = "QUALIFICATION_PENDING"
+    elif total >= 90:
         band = "PRIORITY_BUYER"
     elif total >= 80:
         band = "HOT_BUYER"
     elif total >= 70:
         band = "QUALIFIED_BUYER"
-    elif total >= 50:
-        band = "QUALIFICATION_PENDING"
     else:
-        band = "REJECT"
-    if ai.get("classification") not in {"REAL_BUYER", "POSSIBLE_BUYER"}:
-        band = "REJECT"
+        band = "QUALIFICATION_PENDING"
 
     missing = []
-    for key, label in [("budget_hint", "Budget"), ("timeline_hint", "Timeline"), ("purpose", "Purpose"), ("authority", "Decision authority")]:
+    if not person_ok:
+        missing.append("Buyer identity")
+    for key, label in [
+        ("budget_hint", "Budget"),
+        ("timeline_hint", "Timeline"),
+        ("purpose", "Purpose"),
+        ("authority", "Decision authority"),
+    ]:
         if not ai.get(key) and not score.get(key):
             missing.append(label)
-    if not enrichment.get("phone") and not enrichment.get("email"):
-        missing.append("Contact details")
+    if not attributable_contact:
+        missing.append("Attributable buyer contact")
+    if budget_top is None:
+        missing.append("Budget confirmation")
+
+    crm_ready = bool(
+        person_ok
+        and buyer_class
+        and attributable_contact
+        and shire_budget_fit
+        and total >= 70
+        and band in {"QUALIFIED_BUYER", "HOT_BUYER", "PRIORITY_BUYER"}
+    )
 
     return {
-        "v": 1,
+        "v": 2,
         "classification": ai.get("classification"),
         "band": band,
+        "person_identity_verified": person_ok,
+        "buyer_intent_verified": buyer_class,
+        "contact_attributable": attributable_contact,
+        "shire_budget_fit": shire_budget_fit,
+        "budget_top_crore": budget_top,
+        "crm_ready": crm_ready,
         "ai_confidence": ai.get("confidence"),
         "ai_reason": ai.get("reason"),
-        "score_breakdown": {k: score[k] for k in ["purchase_intent", "budget", "location_fit", "timeline", "need", "authority", "contactability", "total"]},
+        "score_breakdown": {
+            "purchase_intent": score.get("purchase_intent", 0),
+            "budget": score.get("budget", 0),
+            "location_fit": score.get("location_fit", 0),
+            "timeline": score.get("timeline", 0),
+            "need": score.get("need", 0),
+            "authority": score.get("authority", 0),
+            "contactability": contact_points,
+            "total": total,
+        },
         "purpose": ai.get("purpose") or score.get("purpose"),
         "authority": ai.get("authority") or score.get("authority_hint"),
         "contact_status": enrichment.get("contact_status"),
         "contact_evidence_urls": enrichment.get("contact_evidence_urls", []),
         "linkedin_url": (enrichment.get("apollo") or {}).get("linkedin_url"),
-        "missing_qualification": missing,
+        "missing_qualification": list(dict.fromkeys(missing)),
         "source_title": title[:500],
         "source_url": url,
     }
