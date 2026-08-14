@@ -16,7 +16,7 @@ def assert_true(x, msg):
 
 
 def main():
-    assert_true(settings.VERSION == "7.0.1", "Wrong version")
+    assert_true(settings.VERSION == "7.1.1", "Wrong version")
     assert_true(_looks_like_named_person("Amit Sharma"), "Human identity rejected")
     assert_true(not _looks_like_named_person("Identity pending"), "Placeholder identity accepted")
     assert_true(not _looks_like_named_person("Property Kumbh"), "Business identity accepted")

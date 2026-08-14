@@ -55,7 +55,7 @@ class ConfigIssue:
 
 class Settings:
     PROJECT_NAME = "Shire Villas Buyer Intelligence OS"
-    VERSION = "7.0.1"
+    VERSION = "7.1.1"
     ENV = _clean("ENV", "production")
 
     DATABASE_URL = _safe_url(_clean("DATABASE_URL"), "sqlite:///./shire_villas.db")
@@ -106,6 +106,10 @@ class Settings:
     ]
 
     # Run safety.
+
+    STORE_IDENTIFIED_SIGNALS_WITHOUT_CONTACT = _env_bool("STORE_IDENTIFIED_SIGNALS_WITHOUT_CONTACT", True)
+    ENRICHMENT_RETRY_LIMIT = _env_int("ENRICHMENT_RETRY_LIMIT", 50, 1, 500)
+    FINAL_SUITE_AUTO_PROMOTE = _env_bool("FINAL_SUITE_AUTO_PROMOTE", False)
     DAILY_SUITE_LOCK_MINUTES = _env_int("DAILY_SUITE_LOCK_MINUTES", 45, 5, 180)
     HTTP_TIMEOUT_SECONDS = _env_int("HTTP_TIMEOUT_SECONDS", 30, 5, 120)
 

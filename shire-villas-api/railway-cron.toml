@@ -3,6 +3,5 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python trigger_daily_bots.py"
+startCommand = "python run_final_suite.py"
 restartPolicyType = "NEVER"
-cronSchedule = "30 2 * * *"

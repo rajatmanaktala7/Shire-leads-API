@@ -13,6 +13,8 @@ from app.services.lead_bot_service import (
     run_buyer_hunter,
     run_broker_hunter,
     run_daily_suite,
+    run_final_execution_suite,
+    run_pending_enrichment,
     tavily_connection_test,
     tavily_production_search_test,
 )
@@ -171,3 +173,15 @@ def intelligence_diagnostics():
             "crm_requires_verified_contact": True,
         },
     }
+
+
+@router.post("/run/final-suite")
+async def run_final_suite():
+    if not (settings.TAVILY_API_KEY or settings.BRAVE_SEARCH_API_KEY):
+        raise HTTPException(422, "Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY in Railway.")
+    return await run_once(run_final_execution_suite)
+
+
+@router.post("/run/pending-enrichment")
+async def run_enrichment():
+    return await run_pending_enrichment()

@@ -26,31 +26,41 @@ from app.services.lead_intelligence_service import (
 
 
 BUYER_DISCOVERY_SPECS = [
-    {"query": '"looking to buy" "villa" "Goa"', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"want to buy" "villa" "Goa"', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"looking to buy" "villa" Goa', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"looking for a villa" "North Goa"', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"planning to buy" Goa villa', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"my budget" crore Goa villa', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"looking to buy" "villa" Goa', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"looking for a villa" Goa buy', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"my budget" crore Goa property', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"second home" Goa "looking to buy"', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"looking to buy" Goa property', "domains": ["quora.com"], "time_range": "year"},
     {"query": '"buy a villa" "North Goa"', "domains": ["quora.com"], "time_range": "year"},
-    {"query": '"second home" "Goa" "buy"', "domains": ["quora.com"], "time_range": "year"},
-    {"query": '"looking to buy" "Goa" "villa"', "domains": ["linkedin.com"], "time_range": "year"},
-    {"query": '"planning to buy" "Goa" "property"', "domains": ["linkedin.com"], "time_range": "year"},
-    {"query": '"my budget" "Goa" "villa" crore', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"my budget" "Goa" property crore', "domains": ["quora.com"], "time_range": "year"},
-    {"query": '"moving to Goa" "buy" "villa"', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"retiring in Goa" "buy" property', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"recommend a villa" "North Goa" buy', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"my budget" crore Goa villa', "domains": ["quora.com"], "time_range": "year"},
     {"query": '"recommend a villa" "North Goa" buy', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"looking to buy" Goa villa -developer -"for sale" -listing', "domains": None, "time_range": "year"},
+    {"query": '"need a villa" Goa buy -developer -"for sale"', "domains": None, "time_range": "year"},
+    {"query": '"budget" "10 crore" Goa villa buyer', "domains": None, "time_range": "year"},
+    {"query": '"budget" "12 crore" Goa villa buyer', "domains": None, "time_range": "year"},
 ]
+
 
 BUYER_QUERIES = [x["query"] for x in BUYER_DISCOVERY_SPECS]
 
 
 NRI_DISCOVERY_SPECS = [
-    {"query": '"NRI" "looking to buy" "Goa" villa', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"NRI" "second home" "Goa" buy', "domains": ["quora.com"], "time_range": "year"},
-    {"query": '"returning to India" "Goa" "buy" property', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"NRI" "looking to buy" Goa villa', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"NRI" "second home" Goa buy', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"Dubai" "buy villa in Goa"', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"Singapore" "buy property in Goa"', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"NRI" "looking to buy" Goa villa', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"returning to India" Goa buy property', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"NRI" Goa villa budget crore', "domains": ["quora.com"], "time_range": "year"},
     {"query": '"overseas Indian" "buy property" Goa', "domains": ["quora.com"], "time_range": "year"},
-    {"query": '"NRI" "Goa" villa "budget" crore', "domains": ["reddit.com"], "time_range": "year"},
-    {"query": '"NRI" "Goa" property "budget" crore', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"NRI" "looking to buy" Goa villa -developer -"for sale"', "domains": None, "time_range": "year"},
+    {"query": '"second home" Goa NRI buyer budget crore', "domains": None, "time_range": "year"},
 ]
+
 
 NRI_QUERIES = [x["query"] for x in NRI_DISCOVERY_SPECS]
 
@@ -332,15 +342,16 @@ async def run_buyer_hunter(
                 identity_resolved += 1
 
                 enrichment = await enrich_candidate(item["title"], text, item["url"], ai)
-                if not enrichment.get("contact_attributable"):
-                    no_contact += 1
-                    low_quality += 1
-                    continue
-
                 score = _lead_score_with_ai(text, classification, enrichment, ai)
                 intel = build_intelligence_payload(item["title"], item["url"], ai, score, enrichment)
 
-                if intel.get("band") in {"REJECT", "IDENTITY_REQUIRED", "CONTACT_ENRICHMENT_REQUIRED"}:
+                if not enrichment.get("contact_attributable"):
+                    no_contact += 1
+                    if not settings.STORE_IDENTIFIED_SIGNALS_WITHOUT_CONTACT:
+                        low_quality += 1
+                        continue
+
+                if intel.get("band") in {"REJECT", "IDENTITY_REQUIRED"}:
                     low_quality += 1
                     continue
 
@@ -364,8 +375,8 @@ async def run_buyer_hunter(
                     timeline_hint=ai.get("timeline_hint") or score.get("timeline_hint"),
                     intent_type=intel["band"],
                     intent_score=score["total"],
-                    verified=True,
-                    notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name} V6.2."),
+                    verified=bool(enrichment.get("contact_attributable")),
+                    notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name} V7.1 final execution layer."),
                 )
                 db.add(opp); db.flush()
                 opp.suggested_response = suggested_response(opp)
@@ -475,6 +486,80 @@ async def run_broker_hunter() -> dict:
                   "status": run.status, "queries_run": qcount, "results_seen": seen,
                   "partners_created": created, "duplicates_skipped": duplicates, "errors": errors[:5]}
         db.close(); return result
+
+
+async def run_pending_enrichment(limit: int | None = None) -> dict:
+    from app.services.lead_intelligence_service import parse_intelligence_notes
+
+    db = SessionLocal()
+    rows = (
+        db.query(OrganicOpportunity)
+        .filter(OrganicOpportunity.verified == False)  # noqa: E712
+        .order_by(OrganicOpportunity.updated_at.asc())
+        .limit(limit or settings.ENRICHMENT_RETRY_LIMIT)
+        .all()
+    )
+    checked = enriched = still_pending = errors = 0
+    for opp in rows:
+        checked += 1
+        try:
+            intel = parse_intelligence_notes(opp.notes)
+            if not intel or not opp.person_name:
+                continue
+            ai = {
+                "classification": intel.get("classification") or "POSSIBLE_BUYER",
+                "person_name": opp.person_name,
+                "company": opp.brand_company,
+                "buyer_intent": bool(intel.get("buyer_intent_verified")),
+                "confidence": intel.get("ai_confidence"),
+                "reason": intel.get("ai_reason"),
+                "budget_hint": opp.budget_hint,
+                "timeline_hint": opp.timeline_hint,
+                "purpose": intel.get("purpose"),
+                "authority": intel.get("authority"),
+                "location": opp.location,
+            }
+            enrichment = await enrich_candidate(
+                intel.get("source_title") or opp.person_name,
+                opp.source_text or "",
+                opp.source_url or "",
+                ai,
+            )
+            if enrichment.get("contact_attributable"):
+                opp.phone = enrichment.get("phone")
+                opp.email = enrichment.get("email")
+                opp.verified = True
+                score = _lead_score_with_ai(opp.source_text or "", ai["classification"], enrichment, ai)
+                new_intel = build_intelligence_payload(
+                    intel.get("source_title") or opp.person_name,
+                    opp.source_url or "",
+                    ai,
+                    score,
+                    enrichment,
+                )
+                opp.intent_type = new_intel.get("band")
+                opp.intent_score = score.get("total", opp.intent_score)
+                opp.notes = dump_intelligence_notes(new_intel, "Re-enriched automatically by V7.1.")
+                enriched += 1
+            else:
+                still_pending += 1
+            db.commit()
+        except Exception:
+            db.rollback()
+            errors += 1
+    db.close()
+    return {"checked": checked, "enriched": enriched, "still_pending": still_pending, "errors": errors}
+
+
+async def run_final_execution_suite() -> dict:
+    discovery = await run_daily_suite()
+    enrichment = await run_pending_enrichment()
+    return {
+        "status": "completed",
+        "version": settings.VERSION,
+        "discovery": discovery,
+        "pending_enrichment": enrichment,
+    }
 
 
 async def run_daily_suite() -> dict:
