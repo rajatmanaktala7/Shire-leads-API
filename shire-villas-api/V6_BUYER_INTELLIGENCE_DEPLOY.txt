@@ -1,0 +1,93 @@
+SHIRE VILLAS BUYER INTELLIGENCE OS V6.0
+======================================
+
+WHAT V6 FIXES
+-------------
+1. Stops treating news, developer pages, listing portals and generic SEO content as hot buyer leads.
+2. Requires identifiable buyer evidence before automated discovery becomes a buyer opportunity.
+3. Scores against Shire qualification: purchase intent, budget, location/property fit, timeline, need, authority and contactability.
+4. Attempts contact enrichment from public source text/page, Tavily public search, and optionally Apollo.
+5. Never invents phone numbers, emails, names, budgets or timelines.
+6. Shows AI reason + score breakdown + missing qualification fields in Organic Pipeline.
+7. Keeps Flowconnect as final CRM; promotion requires a verified phone/email.
+8. Cron service should only trigger the MAIN Shire service, avoiding duplicate databases/Tavily runs.
+9. Environment-number parsing is defensive: blank/misassigned numeric variables give a clear startup error.
+
+MAIN RAILWAY SERVICE: Shire-leads-API
+-------------------------------------
+Use this V6 code with root directory:
+/shire-villas-api
+
+Required production variables already used by the app:
+TEAM_API_KEY=<your existing team key>
+SECRET_KEY=<your existing secret>
+CORS_ORIGINS=<your existing allowed origin(s)>
+TAVILY_API_KEY=<your Tavily key>
+GROQ_API_KEY=<your Groq key>
+GROQ_MODEL=llama-3.3-70b-versatile
+LEAD_BOT_PROVIDER=tavily
+LEAD_BOT_MAX_RESULTS_PER_QUERY=8
+LEAD_BOT_ACTIONABLE_SCORE=70
+LEAD_BOT_MIN_ADMISSION_SCORE=50
+LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER=true
+LEAD_BOT_TIME_RANGE=week
+
+Optional but recommended for professional contact enrichment:
+APOLLO_API_KEY=<Apollo API key>
+
+Flowconnect (keep your existing working values):
+FLOWCONNECT_WEBHOOK_URL=<Flowconnect incoming webhook/API endpoint>
+FLOWCONNECT_API_KEY=<if your Flowconnect endpoint needs it>
+FLOWCONNECT_WEBHOOK_SECRET=<if configured>
+
+IMPORTANT:
+Do NOT put a model name into LEAD_BOT_MAX_RESULTS_PER_QUERY.
+Do NOT leave numeric variables as blank strings.
+If LEAD_BOT_MIN_SCORE still exists, set it to 70. V6 buyer admission uses LEAD_BOT_ACTIONABLE_SCORE.
+
+CRON SERVICE: stellar-motivation
+--------------------------------
+Use railway-cron.toml as the Railway config file for the cron service.
+The start command must be:
+python trigger_daily_bots.py
+
+The cron service only needs:
+SHIRE_API_URL=https://shire-leads-api-production.up.railway.app
+TEAM_API_KEY=<same TEAM_API_KEY as main service>
+
+It does NOT need Tavily/Groq/Apollo variables because it only triggers the main service.
+Schedule in included railway-cron.toml:
+30 2 * * *
+= 02:30 UTC = 08:00 IST daily.
+
+AFTER DEPLOY
+------------
+1. Open /health. Expect version 6.0.0.
+2. Open dashboard /app/.
+3. AI Lead Bots -> Test Tavily. Expect PASS.
+4. Call GET /bots/diagnostics/intelligence from authenticated dashboard/API.
+5. Run Buyer Hunter once.
+6. Organic Pipeline should now show Buyer Grade, Shire Score, Budget/Timeline, Contact, AI Evidence, Source, Actions.
+7. Use Enrich for a strong buyer whose contact is missing.
+8. Verify contact, then Flowconnect button becomes usable for actionable leads.
+9. In Flowconnect, human or approved AI workflows can perform follow-up.
+
+SCORING (100)
+-------------
+Purchase intent: 25
+Budget fit: 20
+Location/property fit: 15
+Timeline: 15
+Need/use case: 10
+Decision authority: 5
+Contactability: 10
+
+BANDS
+-----
+90-100 PRIORITY_BUYER
+80-89  HOT_BUYER
+70-79  QUALIFIED_BUYER
+50-69  QUALIFICATION_PENDING
+<50    REJECT
+
+A non-buyer content classification is capped/rejected regardless of keyword similarity.

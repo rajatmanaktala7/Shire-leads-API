@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import urllib.error
@@ -36,7 +37,6 @@ def main() -> int:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             body = response.read().decode("utf-8", errors="replace")
-
             print(f"HTTP {response.status}")
             print(body)
 
@@ -52,7 +52,6 @@ def main() -> int:
         print(f"HTTP ERROR {exc.code}")
         print(body)
         return 1
-
     except Exception as exc:
         print(f"ERROR: {type(exc).__name__}: {exc}")
         return 1

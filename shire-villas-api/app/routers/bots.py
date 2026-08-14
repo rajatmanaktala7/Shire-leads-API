@@ -152,3 +152,21 @@ async def start_daily(background_tasks: BackgroundTasks):
         raise HTTPException(422, "Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY in Railway.")
     background_tasks.add_task(_run_daily_background)
     return {"accepted": True, "bot": "Daily Lead Suite", "message": "Started in background"}
+
+@router.get("/diagnostics/intelligence")
+def intelligence_diagnostics():
+    return {
+        "version": "6.0.0",
+        "search_provider": "tavily" if settings.TAVILY_API_KEY else "brave" if settings.BRAVE_SEARCH_API_KEY else None,
+        "groq_classifier": bool(settings.GROQ_API_KEY),
+        "apollo_enrichment": bool(settings.APOLLO_API_KEY),
+        "require_identifiable_buyer": settings.LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER,
+        "actionable_score": settings.LEAD_BOT_ACTIONABLE_SCORE,
+        "min_admission_score": settings.LEAD_BOT_MIN_ADMISSION_SCORE,
+        "flowconnect_configured": bool(settings.FLOWCONNECT_WEBHOOK_URL),
+        "safety": {
+            "invent_contacts": False,
+            "noise_classes_rejected": True,
+            "crm_requires_verified_contact": True,
+        },
+    }

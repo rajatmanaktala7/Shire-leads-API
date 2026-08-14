@@ -1,6 +1,31 @@
 import os
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be an integer, got: {raw!r}")
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        raise RuntimeError(f"{name} must be numeric, got: {raw!r}")
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = (os.getenv(name) or str(default)).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 class Settings:
     PROJECT_NAME: str = "Shire Villas Lead Engine"
     ENV: str = os.getenv("ENV", "development")
@@ -26,7 +51,7 @@ class Settings:
         if o.strip()
     ]
 
-    PORT: int = int(os.getenv("PORT", "8000"))
+    PORT: int = _env_int("PORT", 8000)
 
     # Flowconnect is the final CRM/system of record. Configure an incoming
     # webhook or API endpoint supplied by your Flowconnect account/workflow.
@@ -46,9 +71,16 @@ class Settings:
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "").strip()
     BRAVE_SEARCH_API_KEY: str = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
     LEAD_BOT_PROVIDER: str = os.getenv("LEAD_BOT_PROVIDER", "auto")
-    LEAD_BOT_MIN_SCORE: float = float(os.getenv("LEAD_BOT_MIN_SCORE", "68"))
-    LEAD_BOT_MAX_RESULTS_PER_QUERY: int = int(os.getenv("LEAD_BOT_MAX_RESULTS_PER_QUERY", "8"))
+    LEAD_BOT_MIN_SCORE: float = _env_float("LEAD_BOT_MIN_SCORE", 70)
+    LEAD_BOT_MAX_RESULTS_PER_QUERY: int = _env_int("LEAD_BOT_MAX_RESULTS_PER_QUERY", 8)
     LEAD_BOT_TIME_RANGE: str = os.getenv("LEAD_BOT_TIME_RANGE", "week")
+
+    # V6 Buyer Intelligence settings. Apollo is optional; public-source enrichment works without it.
+    APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "").strip()
+    LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER: bool = _env_bool("LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER", True)
+    LEAD_BOT_ACTIONABLE_SCORE: float = _env_float("LEAD_BOT_ACTIONABLE_SCORE", 70)
+    LEAD_BOT_MIN_ADMISSION_SCORE: float = _env_float("LEAD_BOT_MIN_ADMISSION_SCORE", 50)
+    AUTO_PROMOTE_QUALIFIED_LEADS: bool = _env_bool("AUTO_PROMOTE_QUALIFIED_LEADS", False)
 
     @property
     def is_production(self) -> bool:

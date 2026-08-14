@@ -1,5 +1,3 @@
-import asyncio
-import json
 import re
 from datetime import datetime, timezone
 from urllib.parse import urlparse
@@ -12,29 +10,46 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models.bot import LeadBotRun
 from app.models.lead import OrganicOpportunity, Partner
-from app.services.organic_service import score_opportunity, suggested_response
+from app.services.organic_service import suggested_response
+from app.services.lead_intelligence_service import (
+    ai_classify,
+    apollo_enrich,
+    build_intelligence_payload,
+    deterministic_score,
+    domain,
+    dump_intelligence_notes,
+    enrich_candidate,
+    extract_contacts,
+    fetch_public_page_contacts,
+)
 
 
 BUYER_QUERIES = [
     '"looking to buy" villa Goa',
     '"want to buy" villa "North Goa"',
-    '"looking for" "second home" Goa',
-    '"buying a villa" Goa Siolim',
-    '"need a villa" Goa buy',
+    '"need a villa" Goa purchase',
+    '"looking for a villa" "North Goa" buy',
+    '"planning to buy property" Goa',
+    '"second home" Goa "looking to buy"',
     '"budget" "villa" Goa "crore"',
-    'site:reddit.com "villa" "North Goa" buy',
-    'site:reddit.com "second home" Goa property',
-    'site:quora.com Goa villa buy second home',
-    'site:linkedin.com/posts Goa villa "looking" buy',
+    'site:reddit.com "looking to buy" villa Goa',
+    'site:reddit.com "second home" Goa "buy"',
+    'site:quora.com "buy villa" Goa "budget"',
+    'site:linkedin.com/posts "buy" "Goa villa"',
     '"Siolim" villa "looking to buy"',
-    '"Assagao" OR "Siolim" "second home" buyer',
+    '"Assagao" villa "want to buy"',
+    '"moving to Goa" "buy" villa',
+    '"retiring in Goa" property buy',
+    '"recommend" "villa" "North Goa" buy',
 ]
 
 NRI_QUERIES = [
-    '"NRI" "buy property in Goa"',
-    '"NRI" "second home" Goa villa',
+    '"NRI" "looking to buy" Goa villa',
+    '"NRI" "second home" Goa villa buy',
     '"returning to India" Goa villa buy',
-    '"investment property" Goa villa NRI',
+    '"overseas Indian" "buy property" Goa',
+    '"NRI" "budget" Goa villa crore',
+    '"NRI investment" North Goa villa',
 ]
 
 BROKER_QUERIES = [
@@ -44,41 +59,23 @@ BROKER_QUERIES = [
     '"Goa" "channel partner" luxury real estate',
     '"luxury real estate" broker Delhi Goa',
     '"luxury property" broker Mumbai Goa',
+    '"NRI property consultant" Goa',
+    '"family office" real estate Goa advisor',
 ]
 
-GENERIC_NOISE = [
-    "best villas", "top villas", "for rent", "holiday rental", "airbnb",
-    "booking.com", "hotel", "resort booking", "travel package", "vacation rental",
-    "property listing", "browse properties", "homes for sale", "developer offers",
-]
 
-BUYER_SIGNAL_TERMS = [
-    "looking to buy", "want to buy", "planning to buy", "need a villa",
-    "second home", "purchase", "buyer", "budget", "shortlist", "invest",
-    "considering", "recommend", "which area", "which location",
-]
-
-FIRST_PERSON_TERMS = [
-    "i am looking", "i'm looking", "we are looking", "my budget",
-    "our budget", "i want", "we want", "i plan", "we plan",
-]
-
-LOCATION_TERMS = ["goa", "north goa", "siolim", "assagao", "vagator", "anjuna", "morjim"]
+NOISE_CLASSES = {
+    "DEVELOPER", "PROPERTY_LISTING", "NEWS", "BLOG", "MARKET_REPORT",
+    "GENERIC_SOCIAL_CONTENT", "UNKNOWN", "BROKER", "CHANNEL_PARTNER",
+}
 
 
 def _now():
     return datetime.now(timezone.utc)
 
 
-def _domain(url: str) -> str:
-    try:
-        return urlparse(url).netloc.lower().replace("www.", "")
-    except Exception:
-        return ""
-
-
 def _provider_name() -> str | None:
-    pref = (settings.LEAD_BOT_PROVIDER or "auto").lower()
+    pref = (settings.LEAD_BOT_PROVIDER or "auto").strip().lower()
     if pref == "tavily" and settings.TAVILY_API_KEY:
         return "tavily"
     if pref == "brave" and settings.BRAVE_SEARCH_API_KEY:
@@ -91,46 +88,29 @@ def _provider_name() -> str | None:
 
 
 async def _tavily_search(query: str, max_results: int) -> list[dict]:
-    """
-    Production-safe Tavily Search.
-
-    Uses the same minimal request profile as the Railway diagnostic that is
-    known to pass on the Researcher plan. Groq performs the second-stage
-    semantic quality gate, so advanced search is unnecessary for lead hunting.
-    """
-    payload = {
-        "query": query,
-        "search_depth": "basic",
-        "max_results": max_results,
-    }
-
+    payload = {"query": query, "search_depth": "basic", "max_results": max_results}
     async with httpx.AsyncClient(timeout=35.0) as client:
         r = await client.post(
             "https://api.tavily.com/search",
             headers={
-                "Authorization": f"Bearer {(settings.TAVILY_API_KEY or '').strip()}",
+                "Authorization": f"Bearer {settings.TAVILY_API_KEY}",
                 "Content-Type": "application/json",
             },
             json=payload,
         )
-
         if r.status_code >= 400:
-            # Preserve Tavily's useful error body in bot history, but never secrets.
-            raise RuntimeError(
-                f"Tavily Search failed ({r.status_code}): {r.text[:600]}"
-            )
-
+            raise RuntimeError(f"Tavily Search failed ({r.status_code}): {r.text[:600]}")
         data = r.json()
-
-    out = []
-    for x in data.get("results", []):
-        out.append({
+    return [
+        {
             "title": x.get("title") or "",
             "url": x.get("url") or "",
             "content": x.get("content") or "",
             "provider_score": float(x.get("score") or 0),
-        })
-    return out
+        }
+        for x in data.get("results", [])
+    ]
+
 
 async def _brave_search(query: str, max_results: int) -> list[dict]:
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -148,34 +128,37 @@ async def _brave_search(query: str, max_results: int) -> list[dict]:
         )
         r.raise_for_status()
         data = r.json()
-    out = []
-    for x in (data.get("web") or {}).get("results", []):
-        out.append({
+    return [
+        {
             "title": x.get("title") or "",
             "url": x.get("url") or "",
             "content": x.get("description") or "",
             "provider_score": 0.55,
-        })
-    return out
+        }
+        for x in (data.get("web") or {}).get("results", [])
+    ]
 
+
+async def web_search(query: str, max_results: int | None = None) -> tuple[str, list[dict]]:
+    provider = _provider_name()
+    if not provider:
+        raise RuntimeError("No web-search provider configured. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY.")
+    limit = max_results or settings.LEAD_BOT_MAX_RESULTS_PER_QUERY
+    if provider == "tavily":
+        return provider, await _tavily_search(query, limit)
+    return provider, await _brave_search(query, limit)
 
 
 def tavily_key_diagnostics() -> dict:
     key = (settings.TAVILY_API_KEY or "").strip()
-    return {
-        "configured": bool(key),
-        "prefix": (key[:9] + "…") if key else None,
-        "length": len(key),
-    }
+    return {"configured": bool(key), "prefix": (key[:9] + "…") if key else None, "length": len(key)}
 
 
 async def tavily_connection_test() -> dict:
     key = (settings.TAVILY_API_KEY or "").strip()
     result = tavily_key_diagnostics()
-
     if not key:
         return {**result, "usage_test": "NOT_CONFIGURED", "search_test": "NOT_CONFIGURED"}
-
     headers = {"Authorization": f"Bearer {key}"}
     async with httpx.AsyncClient(timeout=20.0) as client:
         try:
@@ -187,16 +170,11 @@ async def tavily_connection_test() -> dict:
         except Exception as exc:
             result["usage_test"] = "ERROR"
             result["usage_error"] = str(exc)[:500]
-
         try:
             r = await client.post(
                 "https://api.tavily.com/search",
                 headers={**headers, "Content-Type": "application/json"},
-                json={
-                    "query": "luxury villa North Goa",
-                    "search_depth": "basic",
-                    "max_results": 1,
-                },
+                json={"query": '"looking to buy" villa Goa', "search_depth": "basic", "max_results": 1},
             )
             result["search_status_code"] = r.status_code
             result["search_test"] = "PASS" if r.status_code == 200 else "FAIL"
@@ -207,174 +185,50 @@ async def tavily_connection_test() -> dict:
         except Exception as exc:
             result["search_test"] = "ERROR"
             result["search_error"] = str(exc)[:500]
-
     return result
 
 
-
-
 async def tavily_production_search_test() -> dict:
-    """Run the exact payload used by Buyer Hunter."""
     try:
-        provider, results = "tavily", await _tavily_search(
-            '"looking to buy" villa Goa',
-            2,
-        )
-        return {
-            "test": "PASS",
-            "provider": provider,
-            "results": len(results),
-            "sample_titles": [r.get("title", "")[:160] for r in results[:2]],
-        }
+        results = await _tavily_search('"looking to buy" villa Goa', 2)
+        return {"test": "PASS", "provider": "tavily", "results": len(results), "sample_titles": [x["title"][:160] for x in results]}
     except Exception as exc:
-        return {
-            "test": "FAIL",
-            "error": str(exc)[:900],
-        }
-
-
-async def web_search(query: str, max_results: int | None = None) -> tuple[str, list[dict]]:
-    provider = _provider_name()
-    if not provider:
-        raise RuntimeError(
-            "No web-search provider configured. Add TAVILY_API_KEY "
-            "(recommended) or BRAVE_SEARCH_API_KEY in Railway Variables."
-        )
-    limit = max_results or settings.LEAD_BOT_MAX_RESULTS_PER_QUERY
-    if provider == "tavily":
-        return provider, await _tavily_search(query, limit)
-    return provider, await _brave_search(query, limit)
-
-
-def candidate_quality(title: str, content: str, url: str, provider_score: float = 0) -> float:
-    blob = f"{title} {content}".lower()
-    score = score_opportunity(blob)
-
-    # Strong intent boosts.
-    if any(x in blob for x in FIRST_PERSON_TERMS):
-        score += 18
-    if sum(1 for x in BUYER_SIGNAL_TERMS if x in blob) >= 2:
-        score += 10
-    if any(x in blob for x in LOCATION_TERMS):
-        score += 8
-
-    # Search-provider relevance can add up to 8 points.
-    score += min(max(provider_score, 0), 1) * 8
-
-    # Reduce generic SEO/listing/travel noise.
-    if any(x in blob for x in GENERIC_NOISE):
-        score -= 24
-
-    domain = _domain(url)
-    if domain in {"reddit.com", "quora.com", "linkedin.com"}:
-        score += 6
-
-    # A source URL is mandatory for an automated discovery.
-    if not url:
-        score -= 30
-
-    return round(max(0, min(score, 100)), 1)
-
-
-def infer_hints(text: str) -> dict:
-    blob = text.lower()
-    loc = None
-    for x in ["siolim", "assagao", "vagator", "anjuna", "morjim", "north goa", "goa"]:
-        if x in blob:
-            loc = x.title()
-            break
-
-    budget = None
-    m = re.search(r"(?:₹|rs\.?|inr)?\s*(\d+(?:\.\d+)?)\s*(?:cr|crore)", blob)
-    if m:
-        budget = f"{m.group(1)} Cr"
-
-    timeline = None
-    for t in ["immediate", "this month", "0-3 months", "3 months", "3-6 months", "6-12 months"]:
-        if t in blob:
-            timeline = t
-            break
-
-    return {"location": loc, "budget_hint": budget, "timeline_hint": timeline}
+        return {"test": "FAIL", "error": str(exc)[:900]}
 
 
 def _dedupe_opportunity(db: Session, url: str, source_text: str) -> bool:
     if url and db.query(OrganicOpportunity).filter(OrganicOpportunity.source_url == url).first():
         return True
-
-    # Conservative duplicate check on the beginning of source text.
-    prefix = (source_text or "")[:220]
-    if prefix:
-        existing = (
-            db.query(OrganicOpportunity)
-            .filter(OrganicOpportunity.source_text.like(prefix[:140] + "%"))
-            .first()
-        )
-        if existing:
-            return True
+    prefix = (source_text or "")[:180]
+    if prefix and db.query(OrganicOpportunity).filter(OrganicOpportunity.source_text.like(prefix[:120] + "%")).first():
+        return True
     return False
 
 
-async def _ai_quality_gate(text: str, rule_score: float) -> tuple[float, str | None]:
-    """
-    Optional Groq refinement. It never creates outreach; it only adjusts the
-    opportunity score. If Groq is unavailable or parsing fails, rule score wins.
-    """
-    if not settings.GROQ_API_KEY or rule_score < 45:
-        return rule_score, None
-
-    system = (
-        "You are a luxury-real-estate lead-quality analyst for Shire Villas, "
-        "an ultra-luxury villa project in Siolim, North Goa. Judge whether the "
-        "public web snippet indicates a genuine prospective BUYER or investment "
-        "researcher, not a generic article, travel/rental query, seller listing, "
-        "or property advertisement. Return ONLY compact JSON with keys "
-        "buyer_intent (true/false), confidence (0-100), reason (max 120 chars)."
-    )
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            r = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
-                json={
-                    "model": settings.GROQ_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user", "content": text[:5000]},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 120,
-                },
-            )
-            r.raise_for_status()
-            raw = r.json()["choices"][0]["message"]["content"].strip()
-        match = re.search(r"\{.*\}", raw, re.S)
-        if not match:
-            return rule_score, None
-        data = json.loads(match.group(0))
-        confidence = float(data.get("confidence") or 0)
-        if not data.get("buyer_intent"):
-            return min(rule_score, 54), str(data.get("reason") or "")
-        blended = rule_score * 0.55 + confidence * 0.45
-        return round(min(100, blended), 1), str(data.get("reason") or "")
-    except Exception:
-        return rule_score, None
+def _lead_score_with_ai(text: str, classification: str, enrichment: dict, ai: dict) -> dict:
+    score = deterministic_score(text, classification, enrichment.get("phone"), enrichment.get("email"))
+    # Preserve deterministic explainability while allowing AI-extracted questionnaire hints.
+    if ai.get("budget_hint") and not score.get("budget_hint"):
+        score["budget_hint"] = ai["budget_hint"]
+    if ai.get("timeline_hint") and not score.get("timeline_hint"):
+        score["timeline_hint"] = ai["timeline_hint"]
+    if ai.get("purpose") and not score.get("purpose"):
+        score["purpose"] = ai["purpose"]
+    if ai.get("authority") and not score.get("authority_hint"):
+        score["authority_hint"] = ai["authority"]
+    if ai.get("location") and not score.get("location"):
+        score["location"] = ai["location"]
+    return score
 
 
-async def run_buyer_hunter(
-    queries: list[str] | None = None,
-    bot_name: str = "Buyer Intent Hunter",
-) -> dict:
+async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Buyer Intent Hunter") -> dict:
     db = SessionLocal()
     run = LeadBotRun(bot_name=bot_name, status="RUNNING")
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-
+    db.add(run); db.commit(); db.refresh(run)
     created = duplicates = low_quality = seen = qcount = 0
     provider_used = None
-    errors = []
-
+    errors: list[str] = []
+    classified_noise = no_identity = no_contact = 0
     try:
         for query in (queries or BUYER_QUERIES):
             qcount += 1
@@ -388,43 +242,60 @@ async def run_buyer_hunter(
             for item in results:
                 seen += 1
                 text = f"{item['title']}. {item['content']}".strip()
-                rule_score = candidate_quality(
-                    item["title"], item["content"], item["url"], item["provider_score"]
-                )
-                final_score, ai_reason = await _ai_quality_gate(text, rule_score)
-
-                if final_score < settings.LEAD_BOT_MIN_SCORE:
-                    low_quality += 1
-                    continue
                 if _dedupe_opportunity(db, item["url"], text):
                     duplicates += 1
                     continue
 
-                hints = infer_hints(text)
+                ai = await ai_classify(item["title"], text, item["url"])
+                classification = ai["classification"]
+                if classification in NOISE_CLASSES:
+                    classified_noise += 1
+                    low_quality += 1
+                    continue
+                if not ai.get("buyer_intent"):
+                    low_quality += 1
+                    continue
+
+                enrichment = await enrich_candidate(item["title"], text, item["url"], ai)
+                person_name = ai.get("person_name") or (enrichment.get("apollo") or {}).get("person_name")
+                if settings.LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER and not (person_name or enrichment.get("phone") or enrichment.get("email")):
+                    no_identity += 1
+                    low_quality += 1
+                    continue
+
+                score = _lead_score_with_ai(text, classification, enrichment, ai)
+                if score["total"] < settings.LEAD_BOT_MIN_ADMISSION_SCORE:
+                    low_quality += 1
+                    continue
+
+                if not enrichment.get("phone") and not enrichment.get("email"):
+                    no_contact += 1
+
+                intel = build_intelligence_payload(item["title"], item["url"], ai, score, enrichment)
                 opp = OrganicOpportunity(
-                    platform=f"ai_web:{_domain(item['url']) or provider}",
+                    person_name=person_name,
+                    brand_company=ai.get("company") or (enrichment.get("apollo") or {}).get("organization"),
+                    phone=enrichment.get("phone"),
+                    email=enrichment.get("email"),
+                    platform=f"ai_web:{domain(item['url']) or provider}",
                     source_url=item["url"],
                     source_text=text[:8000],
-                    location=hints["location"],
-                    budget_hint=hints["budget_hint"],
-                    timeline_hint=hints["timeline_hint"],
-                    intent_type="BUYER_INTENT",
-                    intent_score=final_score,
-                    notes=(
-                        f"Auto-discovered by {bot_name}. "
-                        + (f"AI quality gate: {ai_reason}" if ai_reason else "")
-                    )[:1800],
+                    location=ai.get("location") or score.get("location"),
+                    budget_hint=ai.get("budget_hint") or score.get("budget_hint"),
+                    timeline_hint=ai.get("timeline_hint") or score.get("timeline_hint"),
+                    intent_type=intel["band"],
+                    intent_score=score["total"],
+                    verified=enrichment.get("contact_status") in {"PUBLIC_FOUND", "VERIFIED_PROVIDER"},
+                    notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name}."),
                 )
-                db.add(opp)
-                db.flush()
+                db.add(opp); db.flush()
                 opp.suggested_response = suggested_response(opp)
                 db.commit()
                 created += 1
 
         run.status = "SUCCESS" if not errors else ("PARTIAL" if created else "FAILED")
     except Exception as exc:
-        errors.append(str(exc))
-        run.status = "FAILED"
+        errors.append(str(exc)); run.status = "FAILED"
     finally:
         run.provider = provider_used
         run.queries_run = qcount
@@ -433,44 +304,31 @@ async def run_buyer_hunter(
         run.duplicates_skipped = duplicates
         run.low_quality_skipped = low_quality
         run.error_text = "\n".join(errors)[-5000:] if errors else None
-        run.completed_at = _now()
-        db.commit()
+        run.completed_at = _now(); db.commit()
         result = {
-            "run_id": run.id,
-            "bot": bot_name,
-            "provider": provider_used,
-            "status": run.status,
-            "queries_run": qcount,
-            "results_seen": seen,
-            "opportunities_created": created,
-            "duplicates_skipped": duplicates,
-            "low_quality_skipped": low_quality,
-            "errors": errors[:5],
+            "run_id": run.id, "bot": bot_name, "provider": provider_used, "status": run.status,
+            "queries_run": qcount, "results_seen": seen, "opportunities_created": created,
+            "duplicates_skipped": duplicates, "low_quality_skipped": low_quality,
+            "noise_rejected": classified_noise, "identity_missing_rejected": no_identity,
+            "qualified_without_contact": no_contact, "errors": errors[:5],
         }
-        db.close()
-        return result
+        db.close(); return result
 
 
 def _partner_exists(db: Session, website: str, name: str) -> bool:
     clauses = []
-    if website:
-        clauses.append(Partner.website == website)
-    if name:
-        clauses.append(Partner.name == name)
+    if website: clauses.append(Partner.website == website)
+    if name: clauses.append(Partner.name == name)
     return bool(clauses and db.query(Partner).filter(or_(*clauses)).first())
 
 
 async def run_broker_hunter() -> dict:
     db = SessionLocal()
     run = LeadBotRun(bot_name="Broker & Channel Partner Hunter", status="RUNNING")
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-
+    db.add(run); db.commit(); db.refresh(run)
     created = duplicates = seen = qcount = 0
     provider_used = None
-    errors = []
-
+    errors: list[str] = []
     try:
         for query in BROKER_QUERIES:
             qcount += 1
@@ -478,89 +336,56 @@ async def run_broker_hunter() -> dict:
                 provider, results = await web_search(query)
                 provider_used = provider
             except Exception as exc:
-                errors.append(f"{query}: {exc}")
-                continue
-
+                errors.append(f"{query}: {exc}"); continue
             for item in results:
                 seen += 1
                 title = re.sub(r"\s*[|–—-].*$", "", item["title"]).strip() or item["title"]
                 website = item["url"]
                 if _partner_exists(db, website, title):
-                    duplicates += 1
-                    continue
-
-                text = f"{item['title']} {item['content']}".lower()
-                score = 45
-                if "luxury" in text:
-                    score += 20
-                if "goa" in text or "north goa" in text:
-                    score += 20
-                if "broker" in text or "consultant" in text or "real estate" in text:
-                    score += 10
-                if any(x in text for x in ["villa", "second home", "hnI".lower(), "nri"]):
-                    score += 5
-
-                if score < 70:
-                    continue
-
+                    duplicates += 1; continue
+                text = f"{item['title']} {item['content']}"
+                b = text.lower()
+                score = 0
+                if "luxury" in b: score += 25
+                if "goa" in b or "north goa" in b: score += 25
+                if any(x in b for x in ["broker", "consultant", "real estate", "channel partner"]): score += 30
+                if any(x in b for x in ["villa", "second home", "hni", "nri", "family office"]): score += 20
+                if score < 70: continue
+                source_contacts = extract_contacts(text)
+                page_contacts = await fetch_public_page_contacts(website)
+                phones = source_contacts["phones"] + [x for x in page_contacts["phones"] if x not in source_contacts["phones"]]
+                emails = source_contacts["emails"] + [x for x in page_contacts["emails"] if x not in source_contacts["emails"]]
+                apollo = await apollo_enrich(None, emails[0] if emails else None, domain(website))
+                phone = phones[0] if phones else apollo.get("phone")
+                email = emails[0] if emails else apollo.get("email")
                 partner = Partner(
-                    name=title[:240],
-                    company=title[:240],
-                    partner_type="broker",
-                    city="Goa" if "goa" in text else None,
-                    website=website,
-                    specialization="Luxury real estate / villa channel partner",
+                    name=title[:240], company=title[:240], partner_type="broker",
+                    city="Goa" if "goa" in b else None, phone=phone, email=email,
+                    website=website, specialization="Luxury real estate / villa channel partner",
                     score=min(score, 100),
-                    notes=f"Auto-discovered from public web search. {item['content'][:900]}",
+                    notes=("Auto-discovered from public web search. " + item["content"][:1000])[:3900],
                 )
-                db.add(partner)
-                db.commit()
-                created += 1
-
+                db.add(partner); db.commit(); created += 1
         run.status = "SUCCESS" if not errors else ("PARTIAL" if created else "FAILED")
     except Exception as exc:
-        errors.append(str(exc))
-        run.status = "FAILED"
+        errors.append(str(exc)); run.status = "FAILED"
     finally:
-        run.provider = provider_used
-        run.queries_run = qcount
-        run.results_seen = seen
-        run.partners_created = created
-        run.duplicates_skipped = duplicates
+        run.provider = provider_used; run.queries_run = qcount; run.results_seen = seen
+        run.partners_created = created; run.duplicates_skipped = duplicates
         run.error_text = "\n".join(errors)[-5000:] if errors else None
-        run.completed_at = _now()
-        db.commit()
-        result = {
-            "run_id": run.id,
-            "bot": "Broker & Channel Partner Hunter",
-            "provider": provider_used,
-            "status": run.status,
-            "queries_run": qcount,
-            "results_seen": seen,
-            "partners_created": created,
-            "duplicates_skipped": duplicates,
-            "errors": errors[:5],
-        }
-        db.close()
-        return result
+        run.completed_at = _now(); db.commit()
+        result = {"run_id": run.id, "bot": "Broker & Channel Partner Hunter", "provider": provider_used,
+                  "status": run.status, "queries_run": qcount, "results_seen": seen,
+                  "partners_created": created, "duplicates_skipped": duplicates, "errors": errors[:5]}
+        db.close(); return result
 
 
 async def run_daily_suite() -> dict:
     buyer = await run_buyer_hunter()
     nri = await run_buyer_hunter(NRI_QUERIES, bot_name="NRI Second-Home Hunter")
     broker = await run_broker_hunter()
-    return {
-        "status": "completed",
-        "buyer_hunter": buyer,
-        "nri_hunter": nri,
-        "broker_hunter": broker,
-    }
+    return {"status": "completed", "buyer_hunter": buyer, "nri_hunter": nri, "broker_hunter": broker}
 
 
 def latest_runs(db: Session, limit: int = 20) -> list[LeadBotRun]:
-    return (
-        db.query(LeadBotRun)
-        .order_by(LeadBotRun.started_at.desc())
-        .limit(limit)
-        .all()
-    )
+    return db.query(LeadBotRun).order_by(LeadBotRun.started_at.desc()).limit(limit).all()
