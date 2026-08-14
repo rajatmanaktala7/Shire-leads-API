@@ -21,36 +21,39 @@ from app.services.lead_intelligence_service import (
     enrich_candidate,
     extract_contacts,
     fetch_public_page_contacts,
+    resolve_buyer_identity,
 )
 
 
-BUYER_QUERIES = [
-    '"looking to buy" villa Goa',
-    '"want to buy" villa "North Goa"',
-    '"need a villa" Goa purchase',
-    '"looking for a villa" "North Goa" buy',
-    '"planning to buy property" Goa',
-    '"second home" Goa "looking to buy"',
-    '"budget" "villa" Goa "crore"',
-    'site:reddit.com "looking to buy" villa Goa',
-    'site:reddit.com "second home" Goa "buy"',
-    'site:quora.com "buy villa" Goa "budget"',
-    'site:linkedin.com/posts "buy" "Goa villa"',
-    '"Siolim" villa "looking to buy"',
-    '"Assagao" villa "want to buy"',
-    '"moving to Goa" "buy" villa',
-    '"retiring in Goa" property buy',
-    '"recommend" "villa" "North Goa" buy',
+BUYER_DISCOVERY_SPECS = [
+    {"query": '"looking to buy" "villa" "Goa"', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"want to buy" "villa" "Goa"', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"buy a villa" "North Goa"', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"second home" "Goa" "buy"', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"looking to buy" "Goa" "villa"', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"planning to buy" "Goa" "property"', "domains": ["linkedin.com"], "time_range": "year"},
+    {"query": '"my budget" "Goa" "villa" crore', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"my budget" "Goa" property crore', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"moving to Goa" "buy" "villa"', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"retiring in Goa" "buy" property', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"recommend a villa" "North Goa" buy', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"recommend a villa" "North Goa" buy', "domains": ["quora.com"], "time_range": "year"},
 ]
 
-NRI_QUERIES = [
-    '"NRI" "looking to buy" Goa villa',
-    '"NRI" "second home" Goa villa buy',
-    '"returning to India" Goa villa buy',
-    '"overseas Indian" "buy property" Goa',
-    '"NRI" "budget" Goa villa crore',
-    '"NRI investment" North Goa villa',
+BUYER_QUERIES = [x["query"] for x in BUYER_DISCOVERY_SPECS]
+
+
+NRI_DISCOVERY_SPECS = [
+    {"query": '"NRI" "looking to buy" "Goa" villa', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"NRI" "second home" "Goa" buy', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"returning to India" "Goa" "buy" property', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"overseas Indian" "buy property" Goa', "domains": ["quora.com"], "time_range": "year"},
+    {"query": '"NRI" "Goa" villa "budget" crore', "domains": ["reddit.com"], "time_range": "year"},
+    {"query": '"NRI" "Goa" property "budget" crore', "domains": ["linkedin.com"], "time_range": "year"},
 ]
+
+NRI_QUERIES = [x["query"] for x in NRI_DISCOVERY_SPECS]
+
 
 BROKER_QUERIES = [
     '"luxury real estate" broker Goa',
@@ -87,9 +90,30 @@ def _provider_name() -> str | None:
     return None
 
 
-async def _tavily_search(query: str, max_results: int) -> list[dict]:
-    payload = {"query": query, "search_depth": "basic", "max_results": max_results}
-    async with httpx.AsyncClient(timeout=35.0) as client:
+async def _tavily_search(
+    query: str,
+    max_results: int,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    time_range: str | None = None,
+    advanced: bool = False,
+) -> list[dict]:
+    payload = {
+        "query": query,
+        "search_depth": "advanced" if advanced else "basic",
+        "max_results": max_results,
+        "include_raw_content": "text" if advanced else False,
+    }
+    if advanced:
+        payload["chunks_per_source"] = 3
+    if include_domains:
+        payload["include_domains"] = include_domains
+    if exclude_domains:
+        payload["exclude_domains"] = exclude_domains
+    if time_range in {"day", "week", "month", "year", "d", "w", "m", "y"}:
+        payload["time_range"] = time_range
+
+    async with httpx.AsyncClient(timeout=45.0) as client:
         r = await client.post(
             "https://api.tavily.com/search",
             headers={
@@ -101,14 +125,18 @@ async def _tavily_search(query: str, max_results: int) -> list[dict]:
         if r.status_code >= 400:
             raise RuntimeError(f"Tavily Search failed ({r.status_code}): {r.text[:600]}")
         data = r.json()
+
     return [
         {
             "title": x.get("title") or "",
             "url": x.get("url") or "",
             "content": x.get("content") or "",
+            "raw_content": x.get("raw_content") or "",
             "provider_score": float(x.get("score") or 0),
+            "published_date": x.get("published_date"),
         }
         for x in data.get("results", [])
+        if float(x.get("score") or 0) >= 0.45
     ]
 
 
@@ -139,13 +167,27 @@ async def _brave_search(query: str, max_results: int) -> list[dict]:
     ]
 
 
-async def web_search(query: str, max_results: int | None = None) -> tuple[str, list[dict]]:
+async def web_search(
+    query: str,
+    max_results: int | None = None,
+    include_domains: list[str] | None = None,
+    exclude_domains: list[str] | None = None,
+    time_range: str | None = None,
+    advanced: bool = False,
+) -> tuple[str, list[dict]]:
     provider = _provider_name()
     if not provider:
         raise RuntimeError("No web-search provider configured. Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY.")
     limit = max_results or settings.LEAD_BOT_MAX_RESULTS_PER_QUERY
     if provider == "tavily":
-        return provider, await _tavily_search(query, limit)
+        return provider, await _tavily_search(
+            query,
+            limit,
+            include_domains=include_domains,
+            exclude_domains=exclude_domains,
+            time_range=time_range,
+            advanced=advanced,
+        )
     return provider, await _brave_search(query, limit)
 
 
@@ -221,19 +263,39 @@ def _lead_score_with_ai(text: str, classification: str, enrichment: dict, ai: di
     return score
 
 
-async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Buyer Intent Hunter") -> dict:
+async def run_buyer_hunter(
+    queries: list[str] | None = None,
+    bot_name: str = "Buyer Intent Hunter",
+    specs: list[dict] | None = None,
+) -> dict:
     db = SessionLocal()
     run = LeadBotRun(bot_name=bot_name, status="RUNNING")
     db.add(run); db.commit(); db.refresh(run)
+
     created = duplicates = low_quality = seen = qcount = 0
     provider_used = None
     errors: list[str] = []
-    classified_noise = no_identity = no_contact = 0
+    classified_noise = no_identity = no_contact = identity_resolved = intent_verified = 0
+
+    if specs is None:
+        if bot_name == "NRI Second-Home Hunter":
+            specs = NRI_DISCOVERY_SPECS
+        elif queries:
+            specs = [{"query": q, "domains": None, "time_range": "year"} for q in queries]
+        else:
+            specs = BUYER_DISCOVERY_SPECS
+
     try:
-        for query in (queries or BUYER_QUERIES):
+        for spec in specs:
+            query = spec["query"]
             qcount += 1
             try:
-                provider, results = await web_search(query)
+                provider, results = await web_search(
+                    query,
+                    include_domains=spec.get("domains"),
+                    time_range=spec.get("time_range") or "year",
+                    advanced=True,
+                )
                 provider_used = provider
             except Exception as exc:
                 errors.append(f"{query}: {exc}")
@@ -241,50 +303,51 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
 
             for item in results:
                 seen += 1
-                text = f"{item['title']}. {item['content']}".strip()
+                raw = item.get("raw_content") or ""
+                text = f"{item['title']}. {item['content']} {raw[:6000]}".strip()
+
                 if _dedupe_opportunity(db, item["url"], text):
                     duplicates += 1
                     continue
 
                 ai = await ai_classify(item["title"], text, item["url"])
+                ai = await resolve_buyer_identity(item["title"], text, item["url"], ai)
+
                 classification = ai["classification"]
                 if classification in NOISE_CLASSES:
                     classified_noise += 1
                     low_quality += 1
                     continue
+
                 if not ai.get("buyer_intent"):
                     low_quality += 1
                     continue
+                intent_verified += 1
+
+                person_name = ai.get("person_name")
+                if not person_name:
+                    no_identity += 1
+                    low_quality += 1
+                    continue
+                identity_resolved += 1
 
                 enrichment = await enrich_candidate(item["title"], text, item["url"], ai)
-                person_name = ai.get("person_name") or (enrichment.get("apollo") or {}).get("person_name")
-                if settings.LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER and not person_name:
-                    no_identity += 1
+                if not enrichment.get("contact_attributable"):
+                    no_contact += 1
                     low_quality += 1
                     continue
 
                 score = _lead_score_with_ai(text, classification, enrichment, ai)
-                if score["total"] < settings.LEAD_BOT_MIN_ADMISSION_SCORE:
-                    low_quality += 1
-                    continue
-
-                if not enrichment.get("phone") and not enrichment.get("email"):
-                    no_contact += 1
-
                 intel = build_intelligence_payload(item["title"], item["url"], ai, score, enrichment)
 
-                # V6.1 hard gates: buyer hunter stores only a named buyer with
-                # attributable contact. Incomplete named buyers are counted as
-                # qualified_without_contact and are not polluted into the sales pipeline.
-                if not intel.get("person_identity_verified"):
-                    no_identity += 1
-                    low_quality += 1
-                    continue
-                if not intel.get("contact_attributable"):
-                    no_contact += 1
-                    low_quality += 1
-                    continue
                 if intel.get("band") in {"REJECT", "IDENTITY_REQUIRED", "CONTACT_ENRICHMENT_REQUIRED"}:
+                    low_quality += 1
+                    continue
+
+                # Minimum admission remains deliberately lower than CRM-ready.
+                # This lets a named, contactable buyer enter qualification even if
+                # budget/timeline still need a human/AI conversation.
+                if score["total"] < settings.LEAD_BOT_MIN_ADMISSION_SCORE:
                     low_quality += 1
                     continue
 
@@ -301,8 +364,8 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
                     timeline_hint=ai.get("timeline_hint") or score.get("timeline_hint"),
                     intent_type=intel["band"],
                     intent_score=score["total"],
-                    verified=enrichment.get("contact_status") in {"ATTRIBUTED_PUBLIC", "VERIFIED_PROVIDER"} and bool(intel.get("contact_attributable")),
-                    notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name}."),
+                    verified=True,
+                    notes=dump_intelligence_notes(intel, f"Auto-discovered by {bot_name} V6.2."),
                 )
                 db.add(opp); db.flush()
                 opp.suggested_response = suggested_response(opp)
@@ -311,7 +374,8 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
 
         run.status = "SUCCESS" if not errors else ("PARTIAL" if created else "FAILED")
     except Exception as exc:
-        errors.append(str(exc)); run.status = "FAILED"
+        errors.append(str(exc))
+        run.status = "FAILED"
     finally:
         run.provider = provider_used
         run.queries_run = qcount
@@ -320,15 +384,28 @@ async def run_buyer_hunter(queries: list[str] | None = None, bot_name: str = "Bu
         run.duplicates_skipped = duplicates
         run.low_quality_skipped = low_quality
         run.error_text = "\n".join(errors)[-5000:] if errors else None
-        run.completed_at = _now(); db.commit()
+        run.completed_at = _now()
+        db.commit()
+
         result = {
-            "run_id": run.id, "bot": bot_name, "provider": provider_used, "status": run.status,
-            "queries_run": qcount, "results_seen": seen, "opportunities_created": created,
-            "duplicates_skipped": duplicates, "low_quality_skipped": low_quality,
-            "noise_rejected": classified_noise, "identity_missing_rejected": no_identity,
-            "qualified_without_contact": no_contact, "errors": errors[:5],
+            "run_id": run.id,
+            "bot": bot_name,
+            "provider": provider_used,
+            "status": run.status,
+            "queries_run": qcount,
+            "results_seen": seen,
+            "opportunities_created": created,
+            "duplicates_skipped": duplicates,
+            "low_quality_skipped": low_quality,
+            "noise_rejected": classified_noise,
+            "identity_resolved": identity_resolved,
+            "identity_missing_rejected": no_identity,
+            "buyer_intent_verified": intent_verified,
+            "qualified_without_contact": no_contact,
+            "errors": errors[:5],
         }
-        db.close(); return result
+        db.close()
+        return result
 
 
 def _partner_exists(db: Session, website: str, name: str) -> bool:
@@ -366,7 +443,9 @@ async def run_broker_hunter() -> dict:
                 if "goa" in b or "north goa" in b: score += 25
                 if any(x in b for x in ["broker", "consultant", "real estate", "channel partner"]): score += 30
                 if any(x in b for x in ["villa", "second home", "hni", "nri", "family office"]): score += 20
-                if score < 70: continue
+                if any(x in b for x in ["news", "market report", "our project", "developer", "villas for sale", "property listing"]):
+                    continue
+                if score < 85: continue
                 source_contacts = extract_contacts(text)
                 page_contacts = await fetch_public_page_contacts(website)
                 phones = source_contacts["phones"] + [x for x in page_contacts["phones"] if x not in source_contacts["phones"]]
@@ -374,6 +453,8 @@ async def run_broker_hunter() -> dict:
                 apollo = await apollo_enrich(None, emails[0] if emails else None, domain(website))
                 phone = phones[0] if phones else apollo.get("phone")
                 email = emails[0] if emails else apollo.get("email")
+                if not phone and not email:
+                    continue
                 partner = Partner(
                     name=title[:240], company=title[:240], partner_type="broker",
                     city="Goa" if "goa" in b else None, phone=phone, email=email,
@@ -398,7 +479,7 @@ async def run_broker_hunter() -> dict:
 
 async def run_daily_suite() -> dict:
     buyer = await run_buyer_hunter()
-    nri = await run_buyer_hunter(NRI_QUERIES, bot_name="NRI Second-Home Hunter")
+    nri = await run_buyer_hunter(bot_name="NRI Second-Home Hunter", specs=NRI_DISCOVERY_SPECS)
     broker = await run_broker_hunter()
     return {"status": "completed", "buyer_hunter": buyer, "nri_hunter": nri, "broker_hunter": broker}
 

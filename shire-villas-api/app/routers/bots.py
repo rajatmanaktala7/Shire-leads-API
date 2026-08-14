@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import get_db
 from app.security import require_team_key
+from app.services.runtime_service import run_once
 from app.services.lead_bot_service import (
     BUYER_QUERIES,
     NRI_QUERIES,
@@ -93,7 +94,7 @@ async def run_brokers():
 async def run_daily():
     if not (settings.TAVILY_API_KEY or settings.BRAVE_SEARCH_API_KEY):
         raise HTTPException(422, "Add TAVILY_API_KEY or BRAVE_SEARCH_API_KEY in Railway.")
-    return await run_daily_suite()
+    return await run_once(run_daily_suite)
 
 
 @router.get("/diagnostics/tavily")
@@ -119,7 +120,7 @@ async def _run_brokers_background():
 
 
 async def _run_daily_background():
-    await run_daily_suite()
+    await run_once(run_daily_suite)
 
 
 @router.post("/start/buyer")
@@ -156,7 +157,7 @@ async def start_daily(background_tasks: BackgroundTasks):
 @router.get("/diagnostics/intelligence")
 def intelligence_diagnostics():
     return {
-        "version": "6.0.0",
+        "version": settings.VERSION,
         "search_provider": "tavily" if settings.TAVILY_API_KEY else "brave" if settings.BRAVE_SEARCH_API_KEY else None,
         "groq_classifier": bool(settings.GROQ_API_KEY),
         "apollo_enrichment": bool(settings.APOLLO_API_KEY),

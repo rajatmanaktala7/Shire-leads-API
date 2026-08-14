@@ -190,6 +190,48 @@ def _looks_like_named_person(name: str | None) -> bool:
     return 1 <= len(parts) <= 5 and any(ch.isalpha() for ch in n)
 
 
+def _same_person_name(a: str | None, b: str | None) -> bool:
+    """
+    Conservative identity comparison that accepts common initials such as
+    "A. Sharma" == "Amit Sharma" while still requiring surname agreement.
+    """
+    if not _looks_like_named_person(a) or not _looks_like_named_person(b):
+        return False
+
+    def parts(value: str) -> list[str]:
+        cleaned = re.sub(r"[^a-z ]", " ", value.lower())
+        return [x for x in cleaned.split() if x]
+
+    pa = parts(a)
+    pb = parts(b)
+    if not pa or not pb:
+        return False
+
+    if pa == pb:
+        return True
+
+    # Require matching surname for non-exact matches.
+    if pa[-1] != pb[-1]:
+        return False
+
+    # First names may be full-name/full-name or initial/full-name.
+    fa, fb = pa[0], pb[0]
+    if fa == fb:
+        return True
+    if len(fa) == 1 and fb.startswith(fa):
+        return True
+    if len(fb) == 1 and fa.startswith(fb):
+        return True
+    return False
+
+
+def _result_mentions_person(item: dict, person_name: str) -> bool:
+    blob = f"{item.get('title','')} {item.get('content','')} {item.get('raw_content','') or ''}".lower()
+    tokens = [x for x in re.sub(r"[^a-z ]", " ", person_name.lower()).split() if len(x) > 1]
+    if len(tokens) >= 2:
+        return tokens[0] in blob and tokens[-1] in blob
+    return bool(tokens and tokens[0] in blob)
+
 def _email_is_generic(email: str | None) -> bool:
     if not email or "@" not in email:
         return True
@@ -382,133 +424,270 @@ async def fetch_public_page_contacts(url: str) -> dict:
         return {"emails": [], "phones": [], "source": None}
 
 
-async def tavily_contact_lookup(person_name: str | None, company: str | None, source_url: str | None) -> dict:
-    if not settings.TAVILY_API_KEY or not _looks_like_named_person(person_name):
-        return {"emails": [], "phones": [], "evidence_urls": []}
-    terms = [x for x in [person_name, company] if x]
-    q = ' "'.join(terms)
-    q = f'"{q}" contact phone email'
-    payload = {"query": q, "search_depth": "basic", "max_results": 5}
+async def resolve_buyer_identity(title: str, text: str, url: str, initial_ai: dict) -> dict:
+    """
+    Second-pass identity resolution for high-intent public signals.
+    It is deliberately conservative: it may improve a named-person result,
+    but it cannot create a buyer from a company/portal/article page.
+    """
+    if not settings.GROQ_API_KEY:
+        return initial_ai
+
+    d = domain(url)
+    social_or_ugc = d in SOCIAL_DOMAINS or d.endswith("reddit.com") or d.endswith("quora.com")
+    if not social_or_ugc and initial_ai.get("classification") not in {"REAL_BUYER", "POSSIBLE_BUYER"}:
+        return initial_ai
+
+    prompt = """You are resolving the identity behind a potential public buyer-intent signal for Shire Villas.
+
+STRICT RULES:
+- Extract a HUMAN name only if the supplied title/text itself supports that identity.
+- Do not use a company, website, publication, property brand, broker brand, page title, or username-like business name as person_name.
+- buyer_intent=true only when the SAME human is personally asking about, planning, considering, or stating a purchase.
+- Mere discussion of Goa property, investing, market trends, or a property's sale is not buyer intent.
+- Never invent missing identity, budget, timeline, phone, or email.
+- If identity is not supported, person_name=null and buyer_intent=false.
+
+Return ONLY JSON:
+{
+ "classification":"REAL_BUYER|POSSIBLE_BUYER|UNKNOWN",
+ "person_name":null,
+ "buyer_intent":false,
+ "confidence":0,
+ "reason":"",
+ "identity_evidence":"",
+ "intent_evidence":"",
+ "budget_hint":null,
+ "timeline_hint":null,
+ "purpose":null,
+ "authority":null,
+ "location":null,
+ "company":null
+}"""
+    payload = {
+        "title": title[:1000],
+        "text": text[:7000],
+        "url": url,
+        "initial": initial_ai,
+    }
     try:
-        async with httpx.AsyncClient(timeout=25.0) as client:
+        async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.post(
-                "https://api.tavily.com/search",
-                headers={"Authorization": f"Bearer {settings.TAVILY_API_KEY}", "Content-Type": "application/json"},
-                json=payload,
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {settings.GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": settings.GROQ_MODEL,
+                    "temperature": 0,
+                    "max_tokens": 500,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                    ],
+                },
             )
             r.raise_for_status()
-            results = r.json().get("results", [])
-        emails, phones, urls = [], [], []
-        for item in results:
-            c = extract_contacts(f"{item.get('title','')} {item.get('content','')}")
-            for e in c["emails"]:
-                if e not in emails: emails.append(e)
-            for p in c["phones"]:
-                if p not in phones: phones.append(p)
-            if c["emails"] or c["phones"]:
-                urls.append(item.get("url"))
-        return {"emails": emails[:3], "phones": phones[:3], "evidence_urls": [u for u in urls if u][:5]}
+            data = json.loads(r.json()["choices"][0]["message"]["content"])
     except Exception:
-        return {"emails": [], "phones": [], "evidence_urls": []}
+        return initial_ai
+
+    name = data.get("person_name")
+    cls = data.get("classification") if data.get("classification") in {"REAL_BUYER", "POSSIBLE_BUYER"} else "UNKNOWN"
+    buyer_intent = bool(data.get("buyer_intent"))
+    if not _looks_like_named_person(name) or not buyer_intent:
+        return {**initial_ai, "classification": "UNKNOWN", "person_name": None, "buyer_intent": False}
+
+    return {
+        **initial_ai,
+        "classification": cls,
+        "person_name": name,
+        "buyer_intent": True,
+        "confidence": max(float(initial_ai.get("confidence") or 0), float(data.get("confidence") or 0)),
+        "reason": data.get("reason") or initial_ai.get("reason"),
+        "identity_evidence": (data.get("identity_evidence") or "")[:700],
+        "intent_evidence": (data.get("intent_evidence") or "")[:700],
+        "budget_hint": data.get("budget_hint") or initial_ai.get("budget_hint"),
+        "timeline_hint": data.get("timeline_hint") or initial_ai.get("timeline_hint"),
+        "purpose": data.get("purpose") or initial_ai.get("purpose"),
+        "authority": data.get("authority") or initial_ai.get("authority"),
+        "location": data.get("location") or initial_ai.get("location"),
+        "company": data.get("company") or initial_ai.get("company"),
+    }
+
+async def tavily_contact_lookup(person_name: str | None, company: str | None, source_url: str | None) -> dict:
+    if not settings.TAVILY_API_KEY or not _looks_like_named_person(person_name):
+        return {"emails": [], "phones": [], "evidence_urls": [], "identity_matches": []}
+
+    queries = [
+        f'"{person_name}" email contact',
+        f'"{person_name}" phone contact',
+        f'"{person_name}" LinkedIn',
+    ]
+    if company:
+        queries.insert(0, f'"{person_name}" "{company}" email phone')
+
+    emails, phones, urls, matches = [], [], [], []
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for q in queries[:4]:
+                payload = {
+                    "query": q,
+                    "search_depth": "advanced",
+                    "chunks_per_source": 2,
+                    "max_results": 5,
+                    "include_raw_content": "text",
+                    "exclude_domains": ["facebook.com", "instagram.com"],
+                }
+                r = await client.post(
+                    "https://api.tavily.com/search",
+                    headers={
+                        "Authorization": f"Bearer {settings.TAVILY_API_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                )
+                if r.status_code >= 400:
+                    continue
+                for item in r.json().get("results", []):
+                    if not _result_mentions_person(item, person_name):
+                        continue
+                    blob = f"{item.get('title','')} {item.get('content','')} {item.get('raw_content','') or ''}"
+                    c = extract_contacts(blob)
+                    if not c["emails"] and not c["phones"]:
+                        continue
+                    for e in c["emails"]:
+                        if not _email_is_generic(e) and e not in emails:
+                            emails.append(e)
+                    for p in c["phones"]:
+                        if p not in phones:
+                            phones.append(p)
+                    u = item.get("url")
+                    if u and u not in urls:
+                        urls.append(u)
+                    matches.append({
+                        "url": u,
+                        "title": (item.get("title") or "")[:300],
+                        "mentions_person": True,
+                    })
+    except Exception:
+        pass
+
+    return {
+        "emails": emails[:3],
+        "phones": phones[:3],
+        "evidence_urls": urls[:5],
+        "identity_matches": matches[:8],
+    }
 
 
 async def apollo_enrich(person_name: str | None, email: str | None, company_domain: str | None) -> dict:
     if not settings.APOLLO_API_KEY or not _looks_like_named_person(person_name):
         return {"matched": False}
-    params = {"reveal_personal_emails": "false", "reveal_phone_number": "false"}
-    if email:
+
+    params = {"reveal_personal_emails": "false", "reveal_phone_number": "false", "name": person_name}
+    if email and not _email_is_generic(email):
         params["email"] = email
-    if person_name:
-        params["name"] = person_name
     if company_domain:
         params["domain"] = company_domain
+
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             r = await client.post(
                 "https://api.apollo.io/api/v1/people/match",
-                headers={"X-Api-Key": settings.APOLLO_API_KEY, "Content-Type": "application/json", "Cache-Control": "no-cache"},
+                headers={
+                    "X-Api-Key": settings.APOLLO_API_KEY,
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache",
+                    "accept": "application/json",
+                },
                 params=params,
             )
             if r.status_code >= 400:
                 return {"matched": False, "error": f"Apollo {r.status_code}"}
             person = (r.json() or {}).get("person") or {}
-        phones = []
-        for p in person.get("phone_numbers") or []:
-            n = p.get("sanitized_number") or p.get("raw_number")
-            if n and n not in phones:
-                phones.append(n)
-        return {
-            "matched": bool(person),
-            "person_name": person.get("name"),
-            "email": person.get("email"),
-            "email_status": person.get("email_status"),
-            "phone": phones[0] if phones else None,
-            "linkedin_url": person.get("linkedin_url"),
-            "title": person.get("title"),
-            "organization": (person.get("organization") or {}).get("name") if isinstance(person.get("organization"), dict) else None,
-        }
     except Exception as exc:
         return {"matched": False, "error": str(exc)[:200]}
+
+    returned_name = person.get("name")
+    if not _same_person_name(person_name, returned_name):
+        return {"matched": False, "error": "Apollo returned a different identity"}
+
+    phones = []
+    for p in person.get("phone_numbers") or []:
+        n = p.get("sanitized_number") or p.get("raw_number")
+        if n and n not in phones:
+            phones.append(n)
+
+    return {
+        "matched": bool(person),
+        "person_name": returned_name,
+        "email": person.get("email"),
+        "email_status": person.get("email_status"),
+        "phone": phones[0] if phones else None,
+        "linkedin_url": person.get("linkedin_url"),
+        "title": person.get("title"),
+        "organization": (person.get("organization") or {}).get("name")
+            if isinstance(person.get("organization"), dict) else None,
+    }
 
 
 async def enrich_candidate(title: str, text: str, url: str, ai: dict) -> dict:
     person_name = ai.get("person_name")
     if not _looks_like_named_person(person_name):
-        # We may observe business contacts on the source page, but we never expose
-        # them as buyer contact details when no human buyer identity is proven.
-        observed = extract_contacts(text)
-        page = await fetch_public_page_contacts(url)
-        has_business_contact = bool(observed["emails"] or observed["phones"] or page["emails"] or page["phones"])
         return {
             "phone": None,
             "email": None,
-            "contact_status": "IDENTITY_REQUIRED" if has_business_contact else "NOT_FOUND",
+            "contact_status": "IDENTITY_REQUIRED",
             "contact_evidence_urls": [],
             "apollo": {"matched": False},
             "contact_attributable": False,
         }
 
-    # Search specifically for the named person. Do not use generic page contacts as
-    # the buyer's contact unless a provider match or named-person lookup supports it.
     lookup = await tavily_contact_lookup(person_name, ai.get("company"), url)
-    emails = list(lookup["emails"])
-    phones = list(lookup["phones"])
-    evidence = [u for u in lookup["evidence_urls"] if u]
+    candidate_email = lookup["emails"][0] if lookup["emails"] else None
+    candidate_phone = lookup["phones"][0] if lookup["phones"] else None
 
-    company_domain = domain(url)
-    apollo = await apollo_enrich(
-        person_name,
-        emails[0] if emails and not _email_is_generic(emails[0]) else None,
-        company_domain if company_domain not in SOCIAL_DOMAINS else None,
-    )
-    if apollo.get("email") and apollo["email"] not in emails:
-        emails.insert(0, apollo["email"])
-    if apollo.get("phone") and apollo["phone"] not in phones:
-        phones.insert(0, apollo["phone"])
+    # For a social/UGC source we usually do not know employer domain.
+    company_domain = None
+    if ai.get("company"):
+        possible = domain(url)
+        if possible and possible not in SOCIAL_DOMAINS:
+            company_domain = possible
 
-    email = emails[0] if emails else None
-    phone = phones[0] if phones else None
-    attributable = _contact_is_attributable(person_name, email, phone, apollo)
+    apollo = await apollo_enrich(person_name, candidate_email, company_domain)
 
-    if apollo.get("matched") and attributable:
-        status = "VERIFIED_PROVIDER"
-    elif attributable and email and not _email_is_generic(email):
-        status = "ATTRIBUTED_PUBLIC"
-    elif email or phone:
-        status = "UNATTRIBUTED_CONTACT"
-        email = None
-        phone = None
-        attributable = False
-    else:
-        status = "IDENTIFIED_NO_CONTACT"
+    if apollo.get("matched") and (apollo.get("email") or apollo.get("phone")):
+        return {
+            "phone": apollo.get("phone"),
+            "email": apollo.get("email"),
+            "contact_status": "VERIFIED_PROVIDER",
+            "contact_evidence_urls": lookup.get("evidence_urls", [])[:5],
+            "apollo": apollo,
+            "contact_attributable": True,
+        }
+
+    # Public contact is accepted only when a search result explicitly contains
+    # the same person's name AND that contact, recorded by tavily_contact_lookup.
+    if lookup.get("identity_matches") and (candidate_email or candidate_phone):
+        return {
+            "phone": candidate_phone,
+            "email": candidate_email,
+            "contact_status": "ATTRIBUTED_PUBLIC",
+            "contact_evidence_urls": lookup.get("evidence_urls", [])[:5],
+            "apollo": apollo,
+            "contact_attributable": True,
+        }
 
     return {
-        "phone": phone,
-        "email": email,
-        "contact_status": status,
-        "contact_evidence_urls": evidence[:5],
+        "phone": None,
+        "email": None,
+        "contact_status": "IDENTIFIED_NO_CONTACT",
+        "contact_evidence_urls": lookup.get("evidence_urls", [])[:5],
         "apollo": apollo,
-        "contact_attributable": attributable,
+        "contact_attributable": False,
     }
 
 
@@ -519,8 +698,8 @@ def build_intelligence_payload(title: str, url: str, ai: dict, score: dict, enri
         "VERIFIED_PROVIDER", "ATTRIBUTED_PUBLIC"
     }
     budget_top = score.get("budget_top_crore")
-    explicit_budget_fail = budget_top is not None and budget_top < 8
-    shire_budget_fit = budget_top is not None and budget_top >= 10
+    explicit_budget_fail = budget_top is not None and budget_top < max(1.0, settings.SHIRE_MIN_BUDGET_CR - 2.0)
+    shire_budget_fit = budget_top is not None and budget_top >= settings.SHIRE_MIN_BUDGET_CR
 
     # Recalculate the contact component only after attribution is known.
     contact_points = 10 if attributable_contact and enrichment.get("phone") and enrichment.get("email") else 9 if attributable_contact and enrichment.get("phone") else 8 if attributable_contact and enrichment.get("email") else 0
@@ -547,11 +726,11 @@ def build_intelligence_payload(title: str, url: str, ai: dict, score: dict, enri
         band = "CONTACT_ENRICHMENT_REQUIRED"
     elif not shire_budget_fit:
         band = "QUALIFICATION_PENDING"
-    elif total >= 90:
+    elif total >= settings.SHIRE_PRIORITY_SCORE:
         band = "PRIORITY_BUYER"
     elif total >= 80:
         band = "HOT_BUYER"
-    elif total >= 70:
+    elif total >= settings.SHIRE_QUALIFIED_SCORE:
         band = "QUALIFIED_BUYER"
     else:
         band = "QUALIFICATION_PENDING"
@@ -577,7 +756,7 @@ def build_intelligence_payload(title: str, url: str, ai: dict, score: dict, enri
         and buyer_class
         and attributable_contact
         and shire_budget_fit
-        and total >= 70
+        and total >= settings.SHIRE_QUALIFIED_SCORE
         and band in {"QUALIFIED_BUYER", "HOT_BUYER", "PRIORITY_BUYER"}
     )
 
@@ -593,6 +772,8 @@ def build_intelligence_payload(title: str, url: str, ai: dict, score: dict, enri
         "crm_ready": crm_ready,
         "ai_confidence": ai.get("confidence"),
         "ai_reason": ai.get("reason"),
+        "identity_evidence": ai.get("identity_evidence"),
+        "intent_evidence": ai.get("intent_evidence"),
         "score_breakdown": {
             "purchase_intent": score.get("purchase_intent", 0),
             "budget": score.get("budget", 0),

@@ -1,105 +1,146 @@
 import os
+import re
+from dataclasses import dataclass
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return default
+def _clean(name: str, default: str = "") -> str:
+    return (os.getenv(name) or default).strip()
+
+
+def _env_int(name: str, default: int, minimum: int | None = None, maximum: int | None = None) -> int:
+    raw = _clean(name)
     try:
-        return int(raw)
+        value = int(raw) if raw else default
     except ValueError:
-        raise RuntimeError(f"{name} must be an integer, got: {raw!r}")
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = (os.getenv(name) or "").strip()
-    if not raw:
-        return default
+def _env_float(name: str, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    raw = _clean(name)
     try:
-        return float(raw)
+        value = float(raw) if raw else default
     except ValueError:
-        raise RuntimeError(f"{name} must be numeric, got: {raw!r}")
+        value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    if maximum is not None:
+        value = min(maximum, value)
+    return value
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    raw = (os.getenv(name) or str(default)).strip().lower()
+    raw = _clean(name, "true" if default else "false").lower()
     return raw in {"1", "true", "yes", "on"}
 
 
-class Settings:
-    PROJECT_NAME: str = "Shire Villas Lead Engine"
-    ENV: str = os.getenv("ENV", "development")
+def _safe_url(raw: str, default: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return default
+    # Railway reference variables can accidentally resolve to blank; never crash boot.
+    return raw
 
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite:///./shire_villas.db")
+
+@dataclass(frozen=True)
+class ConfigIssue:
+    level: str
+    key: str
+    message: str
+
+
+class Settings:
+    PROJECT_NAME = "Shire Villas Buyer Intelligence OS"
+    VERSION = "7.0.1"
+    ENV = _clean("ENV", "production")
+
+    DATABASE_URL = _safe_url(_clean("DATABASE_URL"), "sqlite:///./shire_villas.db")
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+    PORT = _env_int("PORT", 8000, 1, 65535)
 
-    META_PIXEL_ID: str = os.getenv("META_PIXEL_ID", "")
+    TEAM_API_KEY = _clean("TEAM_API_KEY")
+    SECRET_KEY = _clean("SECRET_KEY")
+    CORS_ORIGINS = [x.strip() for x in _clean("CORS_ORIGINS", "http://localhost:8000").split(",") if x.strip()]
 
-    # Required for team-only dashboard/API routes in production.
-    TEAM_API_KEY: str = os.getenv("TEAM_API_KEY", "")
+    GROQ_API_KEY = _clean("GROQ_API_KEY")
+    GROQ_MODEL = _clean("GROQ_MODEL", "llama-3.3-70b-versatile")
 
-    # Keep for future signed sessions/tokens. Never use a predictable production default.
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+    TAVILY_API_KEY = _clean("TAVILY_API_KEY")
+    BRAVE_SEARCH_API_KEY = _clean("BRAVE_SEARCH_API_KEY")
+    LEAD_BOT_PROVIDER = _clean("LEAD_BOT_PROVIDER", "auto").lower()
 
-    CORS_ORIGINS: list[str] = [
-        o.strip()
-        for o in os.getenv("CORS_ORIGINS", "http://localhost:8000").split(",")
-        if o.strip()
+    APOLLO_API_KEY = _clean("APOLLO_API_KEY")
+
+    LEAD_BOT_MIN_SCORE = _env_float("LEAD_BOT_MIN_SCORE", 70, 0, 100)
+    LEAD_BOT_MAX_RESULTS_PER_QUERY = _env_int("LEAD_BOT_MAX_RESULTS_PER_QUERY", 8, 1, 20)
+    LEAD_BOT_TIME_RANGE = _clean("LEAD_BOT_TIME_RANGE", "year")
+    LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER = _env_bool("LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER", True)
+    LEAD_BOT_ACTIONABLE_SCORE = _env_float("LEAD_BOT_ACTIONABLE_SCORE", 70, 0, 100)
+    LEAD_BOT_MIN_ADMISSION_SCORE = _env_float("LEAD_BOT_MIN_ADMISSION_SCORE", 50, 0, 100)
+    AUTO_PROMOTE_QUALIFIED_LEADS = _env_bool("AUTO_PROMOTE_QUALIFIED_LEADS", False)
+
+    FLOWCONNECT_WEBHOOK_URL = _clean("FLOWCONNECT_WEBHOOK_URL")
+    FLOWCONNECT_API_KEY = _clean("FLOWCONNECT_API_KEY")
+    FLOWCONNECT_WEBHOOK_SECRET = _clean("FLOWCONNECT_WEBHOOK_SECRET")
+
+    CLOUDINARY_CLOUD_NAME = _clean("CLOUDINARY_CLOUD_NAME")
+    CLOUDINARY_API_KEY = _clean("CLOUDINARY_API_KEY")
+    CLOUDINARY_API_SECRET = _clean("CLOUDINARY_API_SECRET")
+
+    META_PIXEL_ID = _clean("META_PIXEL_ID")
+
+    # Long-lived business policy: tune in Railway without code changes.
+    SHIRE_MIN_BUDGET_CR = _env_float("SHIRE_MIN_BUDGET_CR", 10, 1, 100)
+    SHIRE_PRIORITY_SCORE = _env_float("SHIRE_PRIORITY_SCORE", 90, 0, 100)
+    SHIRE_QUALIFIED_SCORE = _env_float("SHIRE_QUALIFIED_SCORE", 70, 0, 100)
+    SHIRE_TARGET_LOCATIONS = [
+        x.strip().lower()
+        for x in _clean("SHIRE_TARGET_LOCATIONS", "Siolim,Assagao,Vagator,Morjim,Anjuna,North Goa").split(",")
+        if x.strip()
     ]
 
-    PORT: int = _env_int("PORT", 8000)
-
-    # Flowconnect is the final CRM/system of record. Configure an incoming
-    # webhook or API endpoint supplied by your Flowconnect account/workflow.
-    FLOWCONNECT_WEBHOOK_URL: str = os.getenv("FLOWCONNECT_WEBHOOK_URL", "")
-    FLOWCONNECT_API_KEY: str = os.getenv("FLOWCONNECT_API_KEY", "")
-    FLOWCONNECT_WEBHOOK_SECRET: str = os.getenv("FLOWCONNECT_WEBHOOK_SECRET", "")
-
-    # Cloudinary stores landing-page images and large videos. The API secret
-    # stays server-side and is used only to sign uploads for authenticated team users.
-    CLOUDINARY_CLOUD_NAME: str = os.getenv("CLOUDINARY_CLOUD_NAME", "")
-    CLOUDINARY_API_KEY: str = os.getenv("CLOUDINARY_API_KEY", "")
-    CLOUDINARY_API_SECRET: str = os.getenv("CLOUDINARY_API_SECRET", "")
-
-
-    # Advanced Organic Lead Bots. Tavily is the recommended search provider;
-    # Brave Search can be configured as a fallback. Keys remain server-side.
-    TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "").strip()
-    BRAVE_SEARCH_API_KEY: str = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
-    LEAD_BOT_PROVIDER: str = os.getenv("LEAD_BOT_PROVIDER", "auto")
-    LEAD_BOT_MIN_SCORE: float = _env_float("LEAD_BOT_MIN_SCORE", 70)
-    LEAD_BOT_MAX_RESULTS_PER_QUERY: int = _env_int("LEAD_BOT_MAX_RESULTS_PER_QUERY", 8)
-    LEAD_BOT_TIME_RANGE: str = os.getenv("LEAD_BOT_TIME_RANGE", "week")
-
-    # V6 Buyer Intelligence settings. Apollo is optional; public-source enrichment works without it.
-    APOLLO_API_KEY: str = os.getenv("APOLLO_API_KEY", "").strip()
-    LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER: bool = _env_bool("LEAD_BOT_REQUIRE_IDENTIFIABLE_BUYER", True)
-    LEAD_BOT_ACTIONABLE_SCORE: float = _env_float("LEAD_BOT_ACTIONABLE_SCORE", 70)
-    LEAD_BOT_MIN_ADMISSION_SCORE: float = _env_float("LEAD_BOT_MIN_ADMISSION_SCORE", 50)
-    AUTO_PROMOTE_QUALIFIED_LEADS: bool = _env_bool("AUTO_PROMOTE_QUALIFIED_LEADS", False)
+    # Run safety.
+    DAILY_SUITE_LOCK_MINUTES = _env_int("DAILY_SUITE_LOCK_MINUTES", 45, 5, 180)
+    HTTP_TIMEOUT_SECONDS = _env_int("HTTP_TIMEOUT_SECONDS", 30, 5, 120)
 
     @property
     def is_production(self) -> bool:
         return self.ENV.lower() == "production"
 
+    def config_issues(self) -> list[ConfigIssue]:
+        issues: list[ConfigIssue] = []
+
+        if not self.TEAM_API_KEY:
+            issues.append(ConfigIssue("ERROR" if self.is_production else "WARN", "TEAM_API_KEY", "Team authentication is not configured."))
+        if not self.SECRET_KEY:
+            issues.append(ConfigIssue("ERROR" if self.is_production else "WARN", "SECRET_KEY", "Signed session secret is not configured."))
+        if "*" in self.CORS_ORIGINS and self.is_production:
+            issues.append(ConfigIssue("ERROR", "CORS_ORIGINS", "Wildcard CORS is forbidden in production."))
+
+        if not (self.TAVILY_API_KEY or self.BRAVE_SEARCH_API_KEY):
+            issues.append(ConfigIssue("WARN", "WEB_SEARCH", "No web-search provider is configured; discovery bots will be disabled."))
+        if not self.GROQ_API_KEY:
+            issues.append(ConfigIssue("WARN", "GROQ_API_KEY", "AI classifier is unavailable; conservative rule fallback will be used."))
+        if not self.APOLLO_API_KEY:
+            issues.append(ConfigIssue("WARN", "APOLLO_API_KEY", "Apollo is optional; contact attribution will rely on public evidence only."))
+        if not self.FLOWCONNECT_WEBHOOK_URL:
+            issues.append(ConfigIssue("WARN", "FLOWCONNECT_WEBHOOK_URL", "Flowconnect sync is disabled until configured."))
+
+        if self.LEAD_BOT_MIN_ADMISSION_SCORE > self.LEAD_BOT_ACTIONABLE_SCORE:
+            issues.append(ConfigIssue("WARN", "LEAD_BOT_MIN_ADMISSION_SCORE", "Admission score is above actionable score."))
+
+        return issues
+
     def validate(self) -> None:
-        if self.is_production:
-            missing = []
-            if not self.TEAM_API_KEY:
-                missing.append("TEAM_API_KEY")
-            if not self.SECRET_KEY:
-                missing.append("SECRET_KEY")
-            if "*" in self.CORS_ORIGINS:
-                raise RuntimeError("CORS_ORIGINS cannot contain '*' in production.")
-            if missing:
-                raise RuntimeError(
-                    "Missing required production environment variables: "
-                    + ", ".join(missing)
-                )
+        fatal = [x for x in self.config_issues() if x.level == "ERROR"]
+        if fatal:
+            raise RuntimeError("; ".join(f"{x.key}: {x.message}" for x in fatal))
 
 
 settings = Settings()
